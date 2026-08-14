@@ -12,3 +12,9 @@
     recallLimit: 40
     maxContextChars: 6000
     reflect: true
+
+# Optional web client carrier: bare package name so dsh-client-modules
+# discovers the dsh.client bundle and serves the Settings → Memory panel.
+- id: evo-memory-web
+  name: evo-memory
+  config: {}

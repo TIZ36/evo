@@ -58,6 +58,12 @@ and system-prompt services:
     recallLimit: 40
     maxContextChars: 6000
     reflect: true
+
+# Optional: carries the Settings → Memory web panel (bare package name so the
+# client-modules scan discovers the dsh.client bundle).
+- id: evo-memory-web
+  name: evo-memory
+  config: {}
 ```
 
 See [`examples/cordis.yml`](examples/cordis.yml) for a copyable fragment.
@@ -69,6 +75,78 @@ The adapter uses official Harness extension points:
 - `ctx.llm.stream()` runs reflection and consolidation through the configured Harness model route.
 
 Interrupted, aborted, rejected, and failed turns are not reflected.
+
+## Workspace import (`.claude` / `.codex` / `.copilot` / `.agent` / `.paper`)
+
+When a session opens in a project working directory (`session.header.cwd`), the
+adapter imports the project's existing agent memory and skill files into the
+project scope on the first prompt assembly. The imported knowledge is then
+recalled like any other memory — no configuration required.
+
+| File / directory (relative to `cwd`) | Memory kind |
+| --- | --- |
+| `CLAUDE.md`, `.claude/CLAUDE.md` | fact |
+| `AGENTS.md`, `agents.md`, `.agent/AGENTS.md` | constraint |
+| `.paper/AGENT_MEMORY.md`, `.paper/**/*.md` | fact |
+| `.claude/commands/**/*.md`, `.claude/agents/**/*.md` | procedure |
+| `.codex/**/*.md`, `.copilot/instructions/**/*.md`, `.copilot/prompts/**/*.md`, `.agent/**/*.md` | constraint |
+| `.claude/skills/**/SKILL.md`, `.codex/skills/**/SKILL.md`, `.copilot/skills/**/SKILL.md`, `.agent/skills/**/SKILL.md`, `.paper/skills/**/SKILL.md`, `.paper/agents/skills/**/SKILL.md` | skill |
+
+Each file becomes one memory item titled with its path relative to the workspace
+root, tagged `workspace-import` plus `tool:<tool>`, and sourced with
+`runtime: 'workspace-import'` and the absolute file path. YAML frontmatter is
+stripped; `*.memory.md` skill-experience files and empty documents are skipped.
+
+Import is idempotent: items are upserted by `(project scope, title)`, changed
+files update in place, and removed files are never deleted. A project is
+imported once; re-scan with `force` through the service API:
+
+```ts
+await ctx.evoMemory.importWorkspace('/workspace/app', { force: true })
+```
+
+Disable the automatic import with `workspaceImport: false` in the
+`evo-memory-deepseek` config.
+
+## Native Web panel (Settings → Memory)
+
+The package ships a web client half (`dsh.client` + `exports["./client"]`) that
+adds a **Memory** page to the Harness GUI Settings section. The panel shows the
+memory list (kind tabs + search), the recent reflect/consolidate activity log,
+and actions to consolidate a scope or force a workspace re-import. It is served
+by the DSH client-modules mechanism at `/plugins/evo-memory/client.js` and needs
+no separate build step.
+
+In a live conversation the composer tool row also gets an **evo memory** chip
+(left end) that keeps the evo mark visible and pulses while evo-memory is
+reflecting/consolidating (it polls `/evo-memory/status`). A small `turninfo`
+hint below the input explains that root and cwd memory are active; clicking the
+chip or hint opens a collapsible card in the conversation's top-right corner.
+
+The client half is carried by a no-op Loader row named by the bare package
+(`evo-memory-web` in `cordis.patch.yml`): the client-modules scan discovers
+`dsh.client` packages only through bare package names, so a subpath row like
+`evo-memory/cordis` cannot carry a web client. Restart Harness after upgrading
+for the new boot graph to include the panel.
+
+## HTTP API (`/evo-memory/*`)
+
+The cordis plugin registers a raw route prefix on the DSH web server when the
+`webServer` service is present (the `/api` prefix belongs to the DSH web
+transport, so a plugin bridge uses its own path). These endpoints are the
+reserved integration surface for external frontends:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/evo-memory/status` | `{ ok, databasePath }` |
+| GET | `/evo-memory/memories` | List; query `scopeType`, `scopeId`, `kind` (comma list), `text`, `tags`, `limit` |
+| GET | `/evo-memory/memories/:id` | One memory or 404 |
+| GET | `/evo-memory/events` | Recent activity log, newest first; query `limit` |
+| POST | `/evo-memory/consolidate` | Body `{ scope: { type, id? } }` → consolidation result |
+| POST | `/evo-memory/import-workspace` | Body `{ cwd, force? }` → workspace import result |
+
+The web server binds loopback by default; every response is JSON. The same data
+backs the native Settings panel.
 
 ## Default storage
 
@@ -127,6 +205,16 @@ The core supports `global`, `user`, `project`, `session`, and `conversation` sco
 Reflection prompts explicitly reject secrets, credentials, raw logs, guesses, and transient task state. The SQLite database remains local by default. Model-based reflection still sends the completed turn to the configured Harness model provider; disable it with `reflect: false` when that is not acceptable.
 
 Materialized Markdown is deliberately not a source of truth in v1. Structured storage remains authoritative.
+
+## Project rule
+
+This is a personal open-source project. Company identity and sensitive
+information — company names, brands, domains, mailboxes, employee names,
+internal codenames, intranet addresses, or machine absolute paths — must never
+appear anywhere in the repository, including built artifacts. Team attribution
+is "Paper team" only. The rule is enforced by `scripts/iron-rule.mjs`: the
+source tree is checked on `pnpm test`, and the full tree including `dist/` is
+checked by `pnpm check`.
 
 ## Current limitations
 

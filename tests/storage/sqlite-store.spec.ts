@@ -42,4 +42,18 @@ describe('SqliteMemoryStore', () => {
     await db.replace(project, [item('new')])
     expect((await db.list()).map(row => row.id).sort()).toEqual(['new', 'other'])
   })
+
+  it('records memory events and lists them newest first', async () => {
+    const db = store()
+    const created = item('a')
+    await db.emit({ type: 'memory.created', item: created })
+    await db.emit({ type: 'memory.deleted', id: 'b' })
+    await db.emit({ type: 'memory.consolidated', scope: project, result: { before: 2, after: 1, items: [created] } })
+    const events = await db.listEvents()
+    expect(events).toHaveLength(3)
+    expect(events[0]?.type).toBe('memory.consolidated')
+    expect(events[0]?.scope).toEqual(project)
+    expect(events[2]?.type).toBe('memory.created')
+    expect(events[2]?.payload).toMatchObject({ item: { id: 'a' } })
+  })
 })

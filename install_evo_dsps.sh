@@ -23,6 +23,11 @@ echo "evo-memory: building package"
 pnpm --dir "$SCRIPT_DIR" install --frozen-lockfile
 pnpm --dir "$SCRIPT_DIR" build
 
+if [[ ! -f "$SCRIPT_DIR/dist/client.js" ]]; then
+  echo "evo-memory: dist/client.js is missing — the build did not emit the web client bundle" >&2
+  exit 1
+fi
+
 echo "evo-memory: installing bundle into DeepSeek Harness profile '$PROFILE'"
 npx --yes "$DSH_PACKAGE" plugin --profile "$PROFILE" add --workspace-root "link:$SCRIPT_DIR"
 
@@ -45,7 +50,10 @@ if (!manifest.dsh?.profile?.bundles?.includes('evo-memory')) {
   throw new Error('evo-memory was installed but not activated as a DSH bundle')
 }
 const installed = join(profileDir, 'node_modules', 'evo-memory', 'cordis.patch.yml')
-readFileSync(installed, 'utf8')
+const patch = readFileSync(installed, 'utf8')
+if (!patch.includes('id: evo-memory-web')) {
+  throw new Error('evo-memory bundle patch is missing the web client carrier row (evo-memory-web)')
+}
 NODE
 
 cat <<EOF
@@ -56,6 +64,14 @@ evo-memory: installed successfully
 
 Start Harness as usual:
   npx $DSH_PACKAGE --profile $PROFILE
+
+After startup (web profile):
+  - Settings -> Memory shows the native memory panel (memories, activity log,
+    consolidate / workspace re-import).
+  - HTTP API is reserved at /evo-memory/* for external frontends
+    (status, memories, memories/:id, events, consolidate, import-workspace).
+  - Project memory auto-imports on first prompt in a workspace with
+    .claude/.codex/.copilot/.agent/.paper files.
 
 Optional runtime overrides:
   EVO_MEMORY_PROVIDER=deepseek-official

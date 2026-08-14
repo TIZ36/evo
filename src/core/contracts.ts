@@ -23,6 +23,14 @@ export type MemoryEvent =
   | { type: 'memory.consolidated'; scope: MemoryScope; result: ConsolidationResult }
   | { type: 'memory.reflected'; turn: Turn; delta: MemoryDelta }
 
+/** One persisted activity-log row, newest first. */
+export type MemoryEventRecord = {
+  type: string
+  scope?: MemoryScope | undefined
+  payload: MemoryEvent
+  createdAt: number
+}
+
 export interface MemoryEventSink {
   emit(event: MemoryEvent): void | Promise<void>
 }

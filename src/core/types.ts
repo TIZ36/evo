@@ -26,6 +26,8 @@ export const memorySourceSchema = z.object({
   runtime: z.string().min(1),
   sessionId: z.string().min(1).optional(),
   turn: z.number().int().nonnegative().optional(),
+  /** Absolute source path, set for workspace-imported memories. */
+  path: z.string().min(1).optional(),
 })
 export type MemorySource = z.infer<typeof memorySourceSchema>
 

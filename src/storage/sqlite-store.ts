@@ -1,13 +1,14 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { MemoryStore } from '../core/contracts.js'
+import type { MemoryEventSink, MemoryStore } from '../core/contracts.js'
+import type { MemoryEvent, MemoryEventRecord } from '../core/contracts.js'
 import { memoryItemSchema, scopeKey, type MemoryItem, type MemoryQuery, type MemoryScope } from '../core/types.js'
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js'
 
 type Row = Record<string, unknown>
 
-export class SqliteMemoryStore implements MemoryStore {
+export class SqliteMemoryStore implements MemoryStore, MemoryEventSink {
   private readonly db: DatabaseSync
 
   constructor(readonly path: string) {
@@ -79,6 +80,34 @@ export class SqliteMemoryStore implements MemoryStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  /** Persist one memory event for the activity log (panel / API consumers). */
+  async emit(event: MemoryEvent): Promise<void> {
+    const scope = event.type === 'memory.deleted' ? undefined
+      : event.type === 'memory.consolidated' ? event.scope
+        : event.type === 'memory.reflected' ? event.turn.scope
+          : event.item.scope
+    this.db.prepare('INSERT INTO memory_events (type, scope_json, payload_json, created_at) VALUES (?, ?, ?, ?)')
+      .run(event.type, scope ? JSON.stringify(scope) : null, JSON.stringify(event), Date.now())
+  }
+
+  /** Most recent events, newest first. */
+  async listEvents(limit = 50): Promise<MemoryEventRecord[]> {
+    const rows = this.db.prepare('SELECT type, scope_json, payload_json, created_at FROM memory_events ORDER BY id DESC LIMIT ?')
+      .all(Math.max(1, Math.min(limit, 1000))) as Row[]
+    return rows.map(row => ({
+      type: String(row.type),
+      scope: row.scope_json ? JSON.parse(String(row.scope_json)) as MemoryScope : undefined,
+      payload: JSON.parse(String(row.payload_json)) as MemoryEvent,
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  /** Item count per scope key, for the scope-tree view. */
+  async countByScopeKey(): Promise<Map<string, number>> {
+    const rows = this.db.prepare('SELECT scope_key, COUNT(*) AS count FROM memories GROUP BY scope_key').all() as Row[]
+    return new Map(rows.map(row => [String(row.scope_key), Number(row.count)]))
   }
 
   close(): void { this.db.close() }

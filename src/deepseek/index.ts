@@ -6,6 +6,8 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import '../cordis/service.js'
 import { DeepSeekModelRunner } from './model-runner.js'
 import { extractCompletedTurn, scopesForSession } from './events.js'
+import { scopeKey } from '../core/types.js'
+import type { WorkspaceImportResult } from '../workspace/importer.js'
 
 export { DeepSeekModelRunner } from './model-runner.js'
 export * from './events.js'
@@ -21,6 +23,8 @@ export interface Config {
   recallLimit?: number
   maxContextChars?: number
   reflect?: boolean
+  /** Import project-local agent memory/skill files (.claude/.codex/.copilot/.agent/.paper) once per project. */
+  workspaceImport?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -31,6 +35,7 @@ export const Config: z<Config> = z.object({
   recallLimit: z.number().min(1).max(200).default(40),
   maxContextChars: z.number().min(100).max(50000).default(6000),
   reflect: z.boolean().default(true),
+  workspaceImport: z.boolean().default(true),
 })
 
 export function apply(ctx: Context, config: Config): void {
@@ -38,10 +43,35 @@ export function apply(ctx: Context, config: Config): void {
   const releaseModel = ctx.evoMemory.setModelRunner(new DeepSeekModelRunner(ctx, config))
   ctx.effect(() => releaseModel, 'evoMemory.releaseModel')
 
+  // One-shot workspace ingestion per project: imported once per process, with an
+  // in-flight promise shared by concurrent sessions in the same project.
+  const imported = new Set<string>()
+  const importing = new Map<string, Promise<WorkspaceImportResult>>()
+  const ensureWorkspaceImported = (cwd: string) => {
+    const key = scopeKey({ type: 'project', id: cwd })
+    if (imported.has(key)) return Promise.resolve()
+    const existing = importing.get(key)
+    const promise = existing ?? ctx.evoMemory.importWorkspace(cwd).then(result => {
+      imported.add(key)
+      if (result.created + result.updated > 0) {
+        logger.info('workspace import %s: %d created, %d updated, %d unchanged (%d files)',
+          cwd, result.created, result.updated, result.unchanged, result.files)
+      }
+      return result
+    })
+    if (!existing) importing.set(key, promise)
+    return promise
+      .catch(error => logger.warn('workspace import failed for %s: %s', cwd, String(error)))
+      .finally(() => { if (!existing) importing.delete(key) })
+  }
+
   ctx.on('system-prompt/assemble', async (assembly: PromptAssembly, context: AssembleContext, next) => {
     const result = await next()
     const session = context.agent?.session
     if (!session) return result
+    if (config.workspaceImport !== false && session.header.cwd) {
+      await ensureWorkspaceImported(session.header.cwd)
+    }
     const text = await ctx.evoMemory.context({ scopes: scopesForSession(session), limit: config.recallLimit ?? 40, maxChars: config.maxContextChars ?? 6000 })
     if (!text) return result
     return { ...result, contexts: [...result.contexts, { name: 'evo-memory', text }] }

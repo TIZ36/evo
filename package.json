@@ -1,6 +1,6 @@
 {
   "name": "evo-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Provider-neutral evolving memory service and Cordis plugin for DeepSeek Harness",
   "type": "module",
   "packageManager": "pnpm@9.4.0",
@@ -32,6 +32,9 @@
       "types": "./dist/deepseek/index.d.mts",
       "default": "./dist/deepseek/index.mjs"
     },
+    "./client": {
+      "default": "./dist/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -49,13 +52,20 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
     }
   },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "tsdown",
-    "check": "npm run test && npm run typecheck && npm run build"
+    "build": "tsdown && node scripts/copy-client.mjs",
+    "rule:scan": "node scripts/iron-rule.mjs",
+    "check": "npm run test && npm run typecheck && npm run build && npm run rule:scan"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
