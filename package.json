@@ -1,0 +1,87 @@
+{
+  "name": "evo-memory",
+  "version": "0.1.0",
+  "description": "Provider-neutral evolving memory service and Cordis plugin for DeepSeek Harness",
+  "type": "module",
+  "packageManager": "pnpm@9.4.0",
+  "license": "MIT",
+  "author": "TIZ36",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TIZ36/evo-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TIZ36/evo-memory/issues"
+  },
+  "homepage": "https://github.com/TIZ36/evo-memory#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./cordis": {
+      "types": "./dist/cordis/index.d.mts",
+      "default": "./dist/cordis/index.mjs"
+    },
+    "./deepseek": {
+      "types": "./dist/deepseek/index.d.mts",
+      "default": "./dist/deepseek/index.mjs"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs/design-principles.md",
+    "docs/storage-architecture.md",
+    "docs/reference",
+    "examples",
+    "cordis.patch.yml",
+    "install_evo_dsps.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsdown",
+    "check": "npm run test && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.2 <0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true },
+    "@deepseek-ai/dsh-system-prompt": { "optional": true }
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.22.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.0.0"
+  }
+}

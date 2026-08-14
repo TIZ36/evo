@@ -1,0 +1,50 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+*.tsbuildinfo
+*.tgz
+
+# test / coverage
+coverage/
+.vitest/
+
+# local data / host agent state
+*.db
+*.db-shm
+*.db-wal
+.paper/
+.dsh/
+.cursor/
+
+# env / secrets / credentials
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.p12
+*.key
+*.keystore
+credentials.json
+**/secrets/
+**/credentials/
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*

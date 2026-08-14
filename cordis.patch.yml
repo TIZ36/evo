@@ -1,0 +1,15 @@
+# evo-memory DeepSeek Harness bundle. Installed profiles apply this layer after
+# their existing bundles and before the user's cordis.patch.yml overrides.
+- insert:
+    - id: evo-memory
+      name: evo-memory/cordis
+      config: {}
+
+    - id: evo-memory-deepseek
+      name: evo-memory/deepseek
+      config:
+        provider: !!js process.env.EVO_MEMORY_PROVIDER?.trim() || 'deepseek-official'
+        model: !!js process.env.EVO_MEMORY_MODEL?.trim() || 'deepseek-v4-flash'
+        recallLimit: 40
+        maxContextChars: 6000
+        reflect: true

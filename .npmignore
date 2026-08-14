@@ -1,0 +1,11 @@
+# Keep the published tarball free of local / internal-only paths.
+.paper/
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+docs/superpowers/
+coverage/
+.vitest/
+*.log
