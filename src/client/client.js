@@ -1,14 +1,17 @@
 /**
  * evo-memory native Web panel (DSH client-plugin half).
  *
- * Plain-JS ModuleLoader bundle. Surfaces:
- *   - Settings → Memory page (settings.section): full explorer — scope tree,
- *     kind tabs, search, list, and per-memory detail.
- *   - Composer "evo" chip (conversation.input.left): self-upgrade mark with the
- *     evo wordmark; spins while processing and toggles the corner card.
- *   - Corner card (shell.overlay): a compact Codex-style panel pinned to the
- *     top-right of the conversation area — scope chips + memory list + detail.
- *   - Ambient process line (conversation.composer.dock) while reflecting.
+ * Plain-JS ModuleLoader bundle. Three surfaces, no overlay:
+ *   - Settings → Memory page (settings.section): the ONE place memory is
+ *     browsed — scope tree, kind filter, search, list, per-memory detail.
+ *   - Composer "evo" chip (conversation.input.left): the hourglass mark plus
+ *     wordmark. Status indicator and entry point; clicking opens the Settings
+ *     page rather than expanding a second list UI.
+ *   - Composer dock line (conversation.composer.dock): present only while evo
+ *     is actually reflecting. Idle costs zero vertical space.
+ *
+ * Brand: the hourglass is the only brand asset. Its coral sand is the only
+ * non-host colour in the plugin; everything else rides DSH design tokens.
  *
  * Data comes from the host API at /evo-memory/*.
  */
@@ -20,13 +23,15 @@ window.__ModuleLoader__.load({
 
     var React = require('react')
     var primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    var IconClose = primitives.IconCloseOutline16
+    var Tooltip = primitives.Tooltip
     var useState = React.useState
     var useEffect = React.useEffect
     var useCallback = React.useCallback
 
     var API = '/evo-memory'
     var KINDS = ['fact', 'preference', 'constraint', 'procedure', 'skill']
+    /** Must match the settings.section label below — DOM navigation matches on it. */
+    var SECTION_LABEL = 'Memory'
 
     function h(type, props) {
       var children = Array.prototype.slice.call(arguments, 2)
@@ -50,24 +55,17 @@ window.__ModuleLoader__.load({
       return text.length > max ? text.slice(0, max) + '…' : text
     }
 
-    var KIND_COLORS = {
-      fact: '#4a9eff',
-      preference: '#9d7bff',
-      constraint: '#ff8f4a',
-      procedure: '#3fbf8f',
-      skill: '#ff5c8a',
-    }
-
+    /**
+     * Kinds are typographic, not chromatic. A five-colour badge palette turned
+     * every list into a tag wall and competed with the one accent that should
+     * mean something (evo is working). Weight and letterspacing separate them.
+     */
     function kindBadge(kind) {
-      var color = KIND_COLORS[kind] || '#8a8a8a'
-      return h('span', {
-        className: 'evo-kind',
-        style: { color: color, background: 'color-mix(in srgb, ' + color + ' 12%, transparent)' },
-      }, kind)
+      return h('span', { className: 'evo-kind' }, kind)
     }
 
-    // ── shared store: chip ↔ card ↔ dock ──────────────────────────────────
-    var evoStore = { cardOpen: false, busy: false, listeners: [] }
+    // ── shared store: chip ↔ dock ─────────────────────────────────────────
+    var evoStore = { busy: false, reachable: true, counts: null, listeners: [] }
     function setEvoStore(part) {
       var changed = false
       for (var key in part) {
@@ -82,6 +80,54 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ── opening Settings → Memory ─────────────────────────────────────────
+    /**
+     * DSH exposes no navigation service to client plugins: `openSection(id)` is
+     * handed only to `settings.onboarding` registrants (and only while a blank
+     * session is onboarding), and the settings panel's open/active state lives
+     * in local React state inside the shell. So we drive the DOM instead: click
+     * the settings trigger, then the nav row whose text is our section label.
+     *
+     * Matching is by ARIA role and visible text, never by the shell's hashed CSS
+     * module class names, so a DSH restyle does not silently break this. If the
+     * shell ever changes shape anyway, every step fails closed and the chip just
+     * does nothing — the tooltip still reports status.
+     */
+    function findSettingsPanel() {
+      return document.querySelector('[role="dialog"][aria-modal="true"]')
+    }
+
+    function clickSectionRow(panel) {
+      var nodes = panel.querySelectorAll('*')
+      var deepest = null
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i]
+        if ((node.textContent || '').trim() !== SECTION_LABEL) continue
+        // Prefer the innermost match: the click bubbles up to the nav row handler.
+        if (!deepest || deepest.contains(node)) deepest = node
+      }
+      if (!deepest) return false
+      deepest.click()
+      return true
+    }
+
+    function openMemorySettings() {
+      if (!findSettingsPanel()) {
+        var triggers = document.querySelectorAll('button[aria-haspopup="dialog"]')
+        if (!triggers.length) return false
+        triggers[0].click()
+      }
+      // The panel mounts asynchronously; poll a few frames, then give up quietly.
+      var attempts = 0
+      var step = function () {
+        var panel = findSettingsPanel()
+        if (panel && clickSectionRow(panel)) return
+        if (++attempts < 12) requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
+      return true
+    }
+
     // ── styles ────────────────────────────────────────────────────────────
     function ensureEvoStyle() {
       if (document.getElementById('evo-memory-composer-css')) return
@@ -89,55 +135,38 @@ window.__ModuleLoader__.load({
       tag.id = 'evo-memory-composer-css'
       tag.dataset.plugin = 'evo-memory'
       tag.textContent =
-        '@keyframes evo-pulse { 0%, 100% { opacity: 0.3 } 50% { opacity: 1 } }' +
-        '@keyframes evo-spin { to { transform: rotate(360deg) } }' +
-        '@keyframes evo-card-in { from { opacity: 0; transform: translateX(10px) scale(0.98) } to { opacity: 1; transform: none } }' +
-        // chip
-        '.evo-chip{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 8px;' +
-        'border:1px solid var(--dsw-alias-border-l2,#d8d8d8);background:transparent;border-radius:7px;cursor:pointer;' +
+        // hourglass mark — the only brand asset, and the only non-host colour
+        '.evo-glass{display:inline-flex;flex:none;--evo-accent:#ff5c5c}' +
+        '@supports (color:oklch(0.68 0.19 21)){.evo-glass{--evo-accent:oklch(0.68 0.19 21)}}' +
+        '.evo-glass svg{display:block;transform-origin:50% 50%}' +
+        // idle: the sand has run out — only the settled grain in the lower bulb
+        '.evo-sand-top{opacity:0;transition:opacity .24s var(--ds-ease-in-out,ease-out)}' +
+        '.evo-sand-fall{stroke-dasharray:1.6 8;stroke-dashoffset:-2.5;' +
+        'transition:stroke-dashoffset .24s var(--ds-ease-in-out,ease-out)}' +
+        // reflecting: full stream, and the glass turns over once every 2.4s
+        '.evo-glass[data-busy=true] .evo-sand-top{opacity:1}' +
+        '.evo-glass[data-busy=true] .evo-sand-fall{stroke-dasharray:none;stroke-dashoffset:0}' +
+        '.evo-glass[data-busy=true] svg{animation:evo-turn 4.8s cubic-bezier(.62,0,.2,1) infinite}' +
+        // two 180° turns per cycle, so the loop closes on 360° with no snap-back
+        '@keyframes evo-turn{0%,40%{transform:rotate(0deg)}50%,90%{transform:rotate(180deg)}' +
+        '100%{transform:rotate(360deg)}}' +
+        '@keyframes evo-fade-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}' +
+        // composer chip: borderless at rest, so idle evo costs nothing visually
+        '.evo-chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;' +
+        'border:none;background:transparent;border-radius:7px;cursor:pointer;' +
         'color:var(--dsw-alias-label-secondary,#555);font:inherit;font-size:12px;font-weight:500;' +
-        'transition:background .15s var(--ds-ease-in-out,ease-out),border-color .15s var(--ds-ease-in-out,ease-out),' +
-        'color .15s var(--ds-ease-in-out,ease-out),transform .1s ease-out;}' +
-        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}' +
+        'transition:background .15s var(--ds-ease-in-out,ease-out),' +
+        'color .15s var(--ds-ease-in-out,ease-out),transform .1s ease-out}' +
+        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
+        'color:var(--dsw-alias-label-primary,#262626)}' +
         '.evo-chip:active{transform:scale(.96)}' +
         '.evo-chip:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:2px}' +
-        '.evo-chip[data-active=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));border-color:var(--dsw-alias-border-l1,#c9c9c9)}' +
-        '.evo-chip[data-busy=true]{color:var(--dsw-alias-state-business-primary,#4a9eff);' +
-        'border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4a9eff) 45%,transparent)}' +
-        '.evo-iconbtn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;' +
-        'border:none;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8a8a);border-radius:6px;cursor:pointer;' +
-        'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out)}' +
-        '.evo-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,#262626)}' +
-        '.evo-iconbtn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}' +
-        '.evo-spin{animation:evo-spin 1.15s linear infinite}' +
-        '.evo-spark{animation:evo-pulse 1.15s ease-in-out infinite}' +
-        // corner card
-        '.evo-card{animation:evo-card-in .18s var(--ds-ease-in-out,ease-out);' +
-        'position:fixed;top:72px;right:24px;z-index:91;width:min(360px,calc(100vw - 32px));max-height:min(70vh,620px);overflow:auto;' +
-        'border:1px solid var(--dsw-alias-border-l2,#d8d8d8);background:var(--dsw-alias-bg-overlay,#ffffff);' +
-        'border-radius:12px;box-shadow:var(--dsw-shadow-lv1,0 12px 40px rgba(0,0,0,0.18));' +
-        'padding:12px 14px;color:var(--dsw-alias-label-primary,#262626);font-family:inherit}' +
-        '.evo-card-head{display:flex;align-items:center;gap:7px;margin:0 0 10px}' +
-        '.evo-card-title{font-size:12px;font-weight:600;letter-spacing:.2px}' +
-        '.evo-card-status{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}' +
-        '.evo-card-spacer{flex:1}' +
-        '.evo-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}' +
-        '.evo-chip-mini{height:24px;padding:0 9px;border:1px solid var(--dsw-alias-border-l2,#d8d8d8);background:transparent;' +
-        'color:var(--dsw-alias-label-secondary,#555);border-radius:999px;font:inherit;font-size:11px;cursor:pointer;' +
-        'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out),border-color .15s var(--ds-ease-in-out,ease-out)}' +
-        '.evo-chip-mini:hover{color:var(--dsw-alias-label-primary,#262626)}' +
-        '.evo-chip-mini:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}' +
-        '.evo-chip-mini[data-active=true]{background:var(--dsw-alias-bg-layer-1,#fff);border-color:var(--dsw-alias-border-l1,#c9c9c9);' +
-        'color:var(--dsw-alias-state-business-primary,#4a9eff);font-weight:500}' +
-        '.evo-card-hint{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a);border-top:1px solid var(--dsw-alias-border-l1,#e4e4e4);' +
-        'padding-top:8px;margin-top:8px}' +
-        '.evo-turninfo{display:flex;align-items:center;gap:7px;width:100%;padding:5px 0;border:none;background:transparent;' +
-        'color:var(--dsw-alias-label-tertiary,#8a8a8a);font:inherit;font-size:11px;text-align:left;cursor:pointer;' +
-        'transition:color .15s var(--ds-ease-in-out,ease-out)}' +
-        '.evo-turninfo:hover{color:var(--dsw-alias-label-primary,#262626)}' +
-        '.evo-turninfo:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:2px;border-radius:4px}' +
-        '.evo-turninfo-label{font-weight:600;color:var(--dsw-alias-label-secondary,#555)}' +
-        // rows / detail (shared by card + settings explorer)
+        '.evo-chip[data-state=error]{color:var(--dsw-alias-state-error-primary,#e5484d)}' +
+        '.evo-chip-sub{opacity:.55}' +
+        // composer dock: mounted only while reflecting
+        '.evo-dock{display:flex;align-items:center;gap:7px;padding:4px 0;font-size:11px;line-height:18px;' +
+        'color:var(--dsw-alias-label-tertiary,#8a8a8a);animation:evo-fade-in .24s var(--ds-ease-in-out,ease-out)}' +
+        // rows / detail (settings explorer)
         '.evo-list{margin:0}' +
         '.evo-row{display:flex;align-items:center;gap:8px;width:100%;border:none;border-bottom:1px solid var(--dsw-alias-border-l1,#e4e4e4);' +
         'background:transparent;color:var(--dsw-alias-label-primary,#262626);padding:6px 4px;font:inherit;text-align:left;cursor:pointer;' +
@@ -147,7 +176,9 @@ window.__ModuleLoader__.load({
         '.evo-row:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:-2px}' +
         '.evo-row-title{font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}' +
         '.evo-row-time{margin-left:auto;flex:none;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;font-variant-numeric:tabular-nums}' +
-        '.evo-kind{flex:none;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;line-height:16px;letter-spacing:.2px}' +
+        '.evo-kind{flex:none;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;line-height:16px;' +
+        'letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
+        'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}' +
         '.evo-empty{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;padding:8px 2px}' +
         '.evo-err{color:var(--dsw-alias-state-error-primary,#e5484d);font-size:12px;margin:0 0 8px}' +
         '.evo-detail{padding:2px 0}' +
@@ -166,7 +197,8 @@ window.__ModuleLoader__.load({
         'border-radius:5px;padding:0 6px;line-height:18px}' +
         // settings explorer
         '.evo-page{width:100%;max-width:760px;color:var(--dsw-alias-label-primary,#262626);font-family:inherit}' +
-        '.evo-head{display:flex;align-items:baseline;gap:10px;margin:0 0 14px}' +
+        '.evo-head{display:flex;align-items:center;gap:9px;margin:0 0 18px}' +
+        '.evo-head>.evo-glass{color:var(--dsw-alias-label-secondary,#555)}' +
         '.evo-title{margin:0;font-size:15px;font-weight:600;letter-spacing:.1px}' +
         '.evo-meta{min-width:0;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
         '.evo-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}' +
@@ -210,32 +242,42 @@ window.__ModuleLoader__.load({
         '.evo-activity{display:flex;gap:8px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-secondary,#555);' +
         'padding:2px 0;align-items:baseline}' +
         '.evo-activity-dot{flex:none;width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8a8a8a);align-self:center}' +
+        // Reduced motion keeps the state legible without the turn: busy still
+        // shows the full sand stream, it just stops flipping.
         '@media (prefers-reduced-motion:reduce){' +
-        '.evo-spin,.evo-spark,.evo-pulse{animation:none}.evo-card{animation:none}}'
+        '.evo-glass[data-busy=true] svg{animation:none}.evo-dock{animation:none}}'
       document.head.appendChild(tag)
     }
 
-    // ── evo mark (self-upgrade loop) ──────────────────────────────────────
+    // ── evo mark: the hourglass ───────────────────────────────────────────
+    /**
+     * Capped bars, pinched bowls, coral sand. Time settling into sediment is
+     * what this plugin does, so the glyph says it directly.
+     *
+     *   idle       the sand has run out; one settled grain in the lower bulb
+     *   busy       full stream, and the glass turns over every 2.4s
+     *
+     * The frame is `currentColor` so it inherits host text colour in both
+     * themes; only the sand carries the evo accent.
+     */
     function EvoMark(props) {
       var busy = props.busy === true
       var size = props.size || 15
-      return h('svg', {
-        width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
-        className: busy ? 'evo-spin' : '',
-      },
-        h('path', { d: 'M 10.2 3.29 A 5.2 5.2 0 1 1 5.8 3.29', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
-        h('path', { d: 'M 9.88 3.97 L 11.38 3.84 L 10.52 2.61 Z', fill: 'currentColor' }),
-        busy ? h('path', { className: 'evo-spark', d: 'M 8 6 L 8.5 7.5 L 10 8 L 8.5 8.5 L 8 10 L 7.5 8.5 L 6 8 L 7.5 7.5 Z', fill: 'currentColor' }) : null)
-    }
-
-    function evoDot(busy) {
-      return h('span', {
-        className: busy ? 'evo-spark' : '',
-        style: {
-          width: 6, height: 6, borderRadius: '50%', flex: 'none', display: 'inline-block',
-          background: busy ? 'var(--dsw-alias-state-business-primary, #4a9eff)' : 'var(--dsw-alias-label-tertiary, #8a8a8a)',
-        },
-      })
+      var frame = { stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }
+      return h('span', { className: 'evo-glass', 'data-busy': busy ? 'true' : 'false' },
+        h('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+          h('path', Object.assign({ d: 'M4.1 2.7 H11.9' }, frame)),
+          h('path', Object.assign({ d: 'M4.1 13.3 H11.9' }, frame)),
+          h('path', Object.assign({ d: 'M5.5 2.7 C5.5 5.9 8 6.9 8 8 C8 9.1 5.5 10.1 5.5 13.3' }, frame)),
+          h('path', Object.assign({ d: 'M10.5 2.7 C10.5 5.9 8 6.9 8 8 C8 9.1 10.5 10.1 10.5 13.3' }, frame)),
+          h('path', {
+            className: 'evo-sand-top', d: 'M8.75 5.15 C8.25 5.7 8.05 6.3 8.05 6.85',
+            stroke: 'var(--evo-accent)', strokeWidth: 1.7, strokeLinecap: 'round',
+          }),
+          h('path', {
+            className: 'evo-sand-fall', d: 'M8 6.8 V10.9',
+            stroke: 'var(--evo-accent)', strokeWidth: 1.2, strokeLinecap: 'round',
+          })))
     }
 
     // ── scope helpers ─────────────────────────────────────────────────────
@@ -254,17 +296,20 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function flattenScopes(nodes) {
-      var out = []
-      nodes.forEach(function (node) {
-        out.push(node)
-        ;(node.children || []).forEach(function (child) { out.push(child) })
-      })
-      return out
-    }
-
-    function isRootOrCwd(item) {
-      return item.scope && (item.scope.type === 'global' || item.scope.type === 'project')
+    /**
+     * "root 12 · cwd 43" — what evo will actually pull into the next turn.
+     * Lives in the chip tooltip rather than a permanent line of chrome.
+     */
+    function contextSummary(roots) {
+      var counts = { global: 0, project: 0 }
+      var walk = function (nodes) {
+        nodes.forEach(function (node) {
+          if (node.scope && counts[node.scope.type] !== undefined) counts[node.scope.type] += node.count
+          walk(node.children || [])
+        })
+      }
+      walk(roots || [])
+      return 'root ' + counts.global + ' · cwd ' + counts.project
     }
 
     function sumScopeCount(nodes) {
@@ -411,9 +456,8 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'evo-page' },
         h('div', { className: 'evo-head' },
-          h('span', { style: { display: 'inline-flex', color: s.status && s.status.busy ? 'var(--dsw-alias-state-business-primary, #4a9eff)' : 'var(--dsw-alias-label-tertiary, #8a8a8a)' } },
-            h(EvoMark, { size: 16, busy: !!(s.status && s.status.busy) })),
-          h('h2', { className: 'evo-title' }, 'Memory'),
+          h(EvoMark, { size: 17, busy: !!(s.status && s.status.busy) }),
+          h('h2', { className: 'evo-title' }, SECTION_LABEL),
           h('span', { className: 'evo-meta' }, s.status ? s.status.databasePath : ''),
           h('div', { className: 'evo-actions' },
             h('button', {
@@ -423,7 +467,7 @@ window.__ModuleLoader__.load({
             }, 'Re-import'),
             h('button', { className: 'evo-btn', 'data-accent': 'true', onClick: runConsolidate, disabled: s.loading }, 'Consolidate'),
             h('button', { className: 'evo-btn', onClick: loadAll }, 'Refresh'))),
-        s.error ? h('div', { className: 'evo-err' }, s.error) : null,
+        s.error ? h('div', { className: 'evo-err', role: 'alert' }, 'Memory service unreachable — ' + s.error) : null,
         h('div', { className: 'evo-sec' }, 'Scopes'),
         h('div', { className: 'evo-scopes' },
           h('div', { style: { display: 'flex', alignItems: 'center' } },
@@ -453,15 +497,18 @@ window.__ModuleLoader__.load({
                   }, kind)
                 })),
               h('input', {
-                className: 'evo-input', placeholder: 'search memories', value: s.text,
+                className: 'evo-input', placeholder: 'Search memories', 'aria-label': 'Search memories', value: s.text,
                 onChange: function (event) { patch({ text: event.target.value }) },
               })),
-            s.loading ? h('div', { className: 'evo-empty' }, 'loading…')
+            s.loading ? h('div', { className: 'evo-empty' }, 'Loading…')
               : filtered.length
                 ? h('div', { className: 'evo-list' }, filtered.slice(0, 200).map(function (item) {
                   return h(MemoryRow, { key: item.id, item: item, onSelect: function (selected) { patch({ detail: selected }) } })
                 }))
-                : h('div', { className: 'evo-empty' }, 'No memories in this scope yet.')),
+                : h('div', { className: 'evo-empty' },
+                  s.text || s.kind !== 'all'
+                    ? 'Nothing matches that filter.'
+                    : 'evo writes memory after each completed turn. Finish one and it will appear here.')),
         h('details', { style: { marginTop: 8 } },
           h('summary', { className: 'evo-sec', style: { cursor: 'pointer', margin: '16px 0 8px' } }, 'Recent activity'),
           s.events && s.events.length
@@ -506,147 +553,105 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    // ── corner card (Codex-style, top-right of the conversation area) ─────
-    function EvoCard() {
-      var state = useState({ open: evoStore.cardOpen, busy: evoStore.busy, roots: [], scopeKey: 'all', items: [], detail: null, error: '', loading: false })
-      var s = state[0]
+    // ── status polling (one poller, shared by chip and dock) ──────────────
+    /**
+     * Idle costs almost nothing, so poll lazily; while evo is reflecting the
+     * user is watching the mark, so tighten up. A failed /status is surfaced,
+     * not swallowed — silently looking healthy while the service is down is
+     * the one thing that would break trust in the mark.
+     */
+    var POLL_IDLE_MS = 8000
+    var POLL_BUSY_MS = 1500
+    var pollers = 0
+    var pollTimer = null
+
+    function pollStatus() {
+      fetch(API + '/status').then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+        return res.json()
+      }).then(function (json) {
+        var busy = !!(json && json.busy)
+        setEvoStore({ busy: busy, reachable: true })
+        schedulePoll(busy ? POLL_BUSY_MS : POLL_IDLE_MS)
+      }).catch(function () {
+        setEvoStore({ busy: false, reachable: false })
+        schedulePoll(POLL_IDLE_MS)
+      })
+    }
+
+    function schedulePoll(delay) {
+      if (pollTimer !== null) clearTimeout(pollTimer)
+      pollTimer = pollers > 0 ? setTimeout(pollStatus, delay) : null
+    }
+
+    function useEvoStatus() {
+      var state = useState({ busy: evoStore.busy, reachable: evoStore.reachable, counts: evoStore.counts })
       var set = state[1]
-      var patch = function (part) { set(function (prev) { return Object.assign({}, prev, part) }) }
-
-      var load = useCallback(function () {
-        patch({ loading: true, error: '' })
-        Promise.all([api('/scopes'), api('/memories?limit=100')]).then(function (results) {
-          var items = (results[1].items || []).filter(isRootOrCwd)
-          patch({ roots: results[0].roots || [], items: items, loading: false })
-        }).catch(function (err) { patch({ error: String(err.message || err), loading: false }) })
-      }, [])
-
       useEffect(function () {
         ensureEvoStyle()
         var unsubscribe = subscribeEvoStore(function () {
-          patch({ open: evoStore.cardOpen, busy: evoStore.busy })
-          if (evoStore.cardOpen) load()
+          set({ busy: evoStore.busy, reachable: evoStore.reachable, counts: evoStore.counts })
         })
-        var onKey = function (event) { if (event.key === 'Escape') setEvoStore({ cardOpen: false }) }
-        document.addEventListener('keydown', onKey)
-        if (evoStore.cardOpen) load()
-        return function () { unsubscribe(); document.removeEventListener('keydown', onKey) }
-      }, [load])
-
-      var selectScope = function (node) {
-        var key = node ? node.key : 'all'
-        patch({ scopeKey: key, detail: null, loading: true, error: '' })
-        var path = key === 'all' ? '/memories?limit=100' : '/memories?scopeKey=' + encodeURIComponent(key) + '&limit=100'
-        api(path).then(function (json) {
-          patch({ items: key === 'all' ? (json.items || []).filter(isRootOrCwd) : json.items, loading: false })
-        }).catch(function (err) { patch({ error: String(err.message || err), loading: false }) })
-      }
-
-      if (!s.open) return null
-
-      var chips = [{ key: 'all', scope: null }].concat(
-        flattenScopes(s.roots).filter(function (node) {
-          return node.scope && (node.scope.type === 'global' || node.scope.type === 'project')
-        }).map(function (node) { return { key: node.key, scope: node } }))
-
-      return h('div', { className: 'evo-card', role: 'dialog', 'aria-label': 'evo-memory' },
-          h('div', { className: 'evo-card-head' },
-            h('span', { style: { display: 'inline-flex', color: s.busy ? 'var(--dsw-alias-state-business-primary, #4a9eff)' : 'var(--dsw-alias-label-tertiary, #8a8a8a)' } },
-              h(EvoMark, { size: 14, busy: s.busy })),
-            h('span', { className: 'evo-card-title' }, 'evo memory'),
-            h('span', { className: 'evo-card-status' }, evoDot(s.busy), s.busy ? 'reflecting…' : 'idle'),
-            h('span', { className: 'evo-card-spacer' }),
-            h('button', { className: 'evo-iconbtn', onClick: function () { setEvoStore({ cardOpen: false }) }, 'aria-label': 'Collapse evo memory' }, h(IconClose, { size: 13 }))),
-          s.error ? h('div', { className: 'evo-err' }, s.error) : null,
-          h('div', { className: 'evo-chips' },
-            chips.map(function (chip) {
-              var label = chip.scope ? scopeLabel(chip.scope) : 'all'
-              return h('button', {
-                key: chip.key, className: 'evo-chip-mini', 'data-active': s.scopeKey === chip.key ? 'true' : 'false',
-                onClick: function () { selectScope(chip.scope) },
-                title: chip.scope && chip.scope.id ? String(chip.scope.id) : '',
-              }, label)
-            })),
-          s.detail
-            ? h(MemoryDetail, { item: s.detail, onBack: function () { patch({ detail: null }) } })
-            : s.loading
-              ? h('div', { className: 'evo-empty' }, 'loading…')
-              : s.items.length
-                ? h('div', { className: 'evo-list' }, s.items.slice(0, 50).map(function (item) {
-                  return h(MemoryRow, { key: item.id, item: item, onSelect: function (selected) { patch({ detail: selected }) } })
-                }))
-                : h('div', { className: 'evo-empty' }, 'No memories in this scope yet.'),
-          h('div', { className: 'evo-card-hint' }, 'Root + cwd memory · Full view in Settings → Memory'))
+        pollers += 1
+        if (pollers === 1) schedulePoll(300)
+        return function () {
+          pollers -= 1
+          if (pollers === 0 && pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null }
+          unsubscribe()
+        }
+      }, [])
+      return state[0]
     }
 
     // ── composer chip + dock ──────────────────────────────────────────────
-    function EvoChip(props) {
-      var state = useState({ busy: evoStore.busy, open: evoStore.cardOpen })
-      var s = state[0]
-      var set = state[1]
+    /**
+     * Status indicator first, entry point second. It does not expand anything:
+     * memory is browsed in exactly one place, Settings → Memory.
+     */
+    function EvoChip() {
+      var s = useEvoStatus()
+
+      // Context counts are only needed for the tooltip, so fetch them lazily.
       useEffect(function () {
-        ensureEvoStyle()
-        var unsubscribe = subscribeEvoStore(function () {
-          set({ busy: evoStore.busy, open: evoStore.cardOpen })
-        })
-        var alive = true
-        var timer = null
-        var poll = function () {
-          fetch(API + '/status').then(function (res) { return res.ok ? res.json() : null }).then(function (json) {
-            if (!alive) return
-            var next = !!(json && json.busy)
-            setEvoStore({ busy: next })
-            set({ busy: next, open: evoStore.cardOpen })
-            timer = setTimeout(poll, 2000)
-          }).catch(function () {
-            if (!alive) return
-            setEvoStore({ busy: false })
-            set({ busy: false, open: evoStore.cardOpen })
-            timer = setTimeout(poll, 4000)
-          })
-        }
-        timer = setTimeout(poll, 300)
-        return function () { alive = false; if (timer !== null) clearTimeout(timer); unsubscribe() }
+        if (evoStore.counts) return
+        api('/scopes').then(function (json) {
+          setEvoStore({ counts: contextSummary(json.roots) })
+        }).catch(function () { /* tooltip simply stays generic */ })
       }, [])
-      return h('button', {
+
+      var label = !s.reachable
+        ? 'Memory service unreachable'
+        : s.busy
+          ? 'Distilling this turn into memory…'
+          : (s.counts ? s.counts + ' memories in context' : 'Memory in context')
+
+      var button = h('button', {
         className: 'evo-chip',
-        'data-busy': s.busy ? 'true' : 'false',
-        'data-active': s.open ? 'true' : 'false',
-        onClick: function () { setEvoStore({ cardOpen: !evoStore.cardOpen }) },
-        title: s.busy ? 'evo-memory: processing' : 'evo-memory',
-        'aria-label': 'evo-memory',
-        'aria-expanded': s.open ? 'true' : 'false',
+        'data-state': !s.reachable ? 'error' : s.busy ? 'busy' : 'idle',
+        onClick: openMemorySettings,
+        'aria-label': 'evo memory — ' + label,
       },
         h(EvoMark, { size: 15, busy: s.busy }),
         h('span', null, 'evo'),
-        h('span', { style: { opacity: 0.62 } }, 'memory'))
+        h('span', { className: 'evo-chip-sub' }, 'memory'))
+
+      return Tooltip ? h(Tooltip, { label: label, side: 'top' }, button) : button
     }
 
-    function EvoDock(props) {
-      var state = useState(evoStore.busy)
-      var busy = state[0]
-      var setBusy = state[1]
-      useEffect(function () {
-        ensureEvoStyle()
-        var unsubscribe = subscribeEvoStore(function () { setBusy(evoStore.busy) })
-        return unsubscribe
-      }, [])
-      return h('button', {
-        className: 'evo-turninfo',
-        onClick: function () { setEvoStore({ cardOpen: !evoStore.cardOpen }) },
-        'aria-label': 'Show turninfo and evo memory',
-        'aria-expanded': evoStore.cardOpen ? 'true' : 'false',
-      },
-        h(EvoMark, { size: 12, busy: busy }),
-        h('span', { className: 'evo-turninfo-label' }, 'turninfo'),
-        h('span', null, busy ? 'evo is updating memory…' : 'evo will use root + cwd memory'))
+    /** Ambient line under the composer. Mounted only while reflecting. */
+    function EvoDock() {
+      var s = useEvoStatus()
+      if (!s.busy) return null
+      return h('div', { className: 'evo-dock', role: 'status' },
+        h(EvoMark, { size: 12, busy: true }),
+        h('span', null, 'Distilling this turn into memory…'))
     }
 
     // ── slots ─────────────────────────────────────────────────────────────
     function apply(ctx) {
       ctx.slots.inject('settings.section', function () {
         return ctx.slots.register(
-          { name: 'settings.section', id: 'evo-memory', order: 25, label: function () { return 'Memory' } },
+          { name: 'settings.section', id: 'evo-memory', order: 25, label: function () { return SECTION_LABEL } },
           function () { return h(EvoExplorer, null) })
       })
       ctx.slots.inject('conversation.input.left', function () {
@@ -658,11 +663,6 @@ window.__ModuleLoader__.load({
         return ctx.slots.register(
           { name: 'conversation.composer.dock', id: 'evo-memory', order: 10, label: function () { return 'evo-memory' } },
           EvoDock)
-      })
-      ctx.slots.inject('shell.overlay', function () {
-        return ctx.slots.register(
-          { name: 'shell.overlay', id: 'evo-memory', order: 0, label: function () { return 'evo-memory' } },
-          EvoCard)
       })
     }
 
