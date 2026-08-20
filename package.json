@@ -50,6 +50,7 @@
     "examples",
     "cordis.patch.yml",
     "install_evo_dsps.sh",
+    "install_evo_claude.sh",
     "README.md",
     "LICENSE"
   ],

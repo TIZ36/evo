@@ -171,6 +171,21 @@ upgrading so the new boot graph includes the panel.
 evo also plugs into Claude Code (CLI and desktop, which share `~/.claude/settings.json`)
 through its hook system — no Harness, no web server, no API key of its own.
 
+```bash
+./install_evo_claude.sh              # install or upgrade, for every project
+./install_evo_claude.sh --uninstall  # remove evo's entries again
+```
+
+The installer builds the package and patches the user-level
+`~/.claude/settings.json` (override the location with `CLAUDE_CONFIG_DIR`). It is
+meant to be re-run: evo's own entries are replaced with the current set — hook
+events added by a later version included — while every other hook in the file is
+kept as it is. The previous file is copied to `settings.json.evo-backup` first,
+and the installed command is probed before success is reported.
+
+To wire it by hand instead, or to scope evo to a single repository through that
+project's `.claude/settings.json`:
+
 ```json
 {
   "hooks": {
@@ -181,13 +196,11 @@ through its hook system — no Harness, no web server, no API key of its own.
 }
 ```
 
-Put it in `~/.claude/settings.json` for every project, or in a project's
-`.claude/settings.json` to scope it to one repository. `hooks` entries are
-arrays, so this coexists with hooks you already run. A copyable file is in
-[`examples/claude-code-settings.json`](examples/claude-code-settings.json).
-
+`hooks` entries are arrays, so this coexists with hooks you already run. A
+copyable file is in [`examples/claude-code-settings.json`](examples/claude-code-settings.json).
 `evo-hook` is the package's bin; from a local checkout use
-`node /path/to/evo/dist/hook/cli.mjs` as the command instead.
+`node /path/to/evo/dist/hook/cli.mjs` as the command instead. Installing both
+globally and per-project makes evo run twice per turn — pick one.
 
 | Event | What evo does |
 | --- | --- |
