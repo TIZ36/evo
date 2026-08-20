@@ -1,0 +1,12 @@
+{
+  "name": "evo",
+  "description": "Evolving memory for agents, as a Claude Code plugin.",
+  "owner": { "name": "Paper team" },
+  "plugins": [
+    {
+      "name": "evo",
+      "source": "./plugin",
+      "description": "Recalls durable memory into every session and distils finished turns back into it. Local SQLite storage, no API key of its own."
+    }
+  ]
+}

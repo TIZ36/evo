@@ -68,9 +68,10 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "tsdown && node scripts/copy-client.mjs",
+    "build": "tsdown && node scripts/copy-client.mjs && pnpm plugin:build",
     "rule:scan": "node scripts/iron-rule.mjs",
-    "check": "npm run test && npm run typecheck && npm run build && npm run rule:scan"
+    "check": "npm run test && npm run typecheck && npm run build && npm run rule:scan",
+    "plugin:build": "tsdown -c tsdown.plugin.config.ts"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

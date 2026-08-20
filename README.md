@@ -171,10 +171,21 @@ upgrading so the new boot graph includes the panel.
 evo also plugs into Claude Code (CLI and desktop, which share `~/.claude/settings.json`)
 through its hook system — no Harness, no web server, no API key of its own.
 
+Install it as a plugin:
+
+```
+/plugin marketplace add TIZ36/evo
+/plugin install evo
+```
+
+or patch the settings file directly with the installer:
+
 ```bash
 ./install_evo_claude.sh              # install or upgrade, for every project
 ./install_evo_claude.sh --uninstall  # remove evo's entries again
 ```
+
+Use one or the other. Both at once makes evo run twice per turn.
 
 The installer builds the package and patches the user-level
 `~/.claude/settings.json` (override the location with `CLAUDE_CONFIG_DIR`). It is
@@ -213,6 +224,20 @@ Code already has. It takes several seconds, so the `Stop` hook returns
 immediately and the work continues in a detached process — a session is never
 blocked by evo. The child runs with `EVO_HOOK_DISABLE=1` so its own hooks exit at
 once; without that guard reflection would recurse.
+
+### As a plugin
+
+The repository is also a plugin marketplace: `.claude-plugin/marketplace.json`
+offers a single plugin whose source is [`plugin/`](plugin), holding the manifest,
+`hooks/hooks.json`, and one dependency-free bundle at `plugin/bin/hook.mjs`.
+
+That bundle is committed on purpose. Claude Code installs a plugin by copying the
+repository: it runs no build step, and restores dependencies only for npm and bun
+lockfiles, never pnpm. So the plugin has to be runnable exactly as checked in —
+`pnpm build` regenerates it, `pnpm test` fails if it drifts from the source, and
+the hook commands address it through `${CLAUDE_PLUGIN_ROOT}` so no machine path
+is ever written down.
+
 
 ### What you see
 
