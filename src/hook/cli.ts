@@ -10,6 +10,7 @@ import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter } from '../workspace/importer.js'
 import { ClaudeCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
+import { formatNotice, takeNotice, writeNotice } from './notice.js'
 import { canonicalPath, hookScopes, projectScope } from './scope.js'
 import { extractLatestTurn, parseTranscript } from './transcript.js'
 
@@ -29,6 +30,7 @@ export type HookConfig = {
   reflect: boolean
   importWorkspace: boolean
   model: string
+  notify: boolean
   debug: boolean
 }
 
@@ -39,6 +41,7 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
     reflect: env.EVO_HOOK_REFLECT !== '0',
     importWorkspace: env.EVO_HOOK_IMPORT !== '0',
     model: env.EVO_HOOK_MODEL?.trim() || DEFAULT_HOOK_MODEL,
+    notify: env.EVO_HOOK_NOTIFY !== '0',
     debug: env.EVO_HOOK_DEBUG === '1',
   }
 }
@@ -65,6 +68,29 @@ export async function reflectTurn(event: HookEvent, service: EvoService): Promis
     assistant: draft.assistant,
     tools: draft.tools,
   })
+}
+
+/**
+ * Claude Code renders `systemMessage` as its own element in the transcript, so
+ * it is evo's only visible surface here. It stays silent on an ordinary recall
+ * and speaks only when evo learned something, or when it is broken.
+ */
+export function hookOutput(context: string, systemMessage?: string, event?: HookEvent): string {
+  const payload: Record<string, unknown> = {}
+  if (context.trim()) {
+    payload.hookSpecificOutput = { hookEventName: event?.hook_event_name ?? 'UserPromptSubmit', additionalContext: context }
+  }
+  if (systemMessage) payload.systemMessage = systemMessage
+  return Object.keys(payload).length ? JSON.stringify(payload) : ''
+}
+
+/**
+ * Only a prompt turn can show a notice: SessionStart consumes hook output
+ * without rendering a system message, so a notice taken there would vanish.
+ */
+export function noticeMessage(event: HookEvent, config: HookConfig, dir: string): string | undefined {
+  if (!config.notify || event.hook_event_name !== 'UserPromptSubmit') return undefined
+  return formatNotice(takeNotice(dir))
 }
 
 export function openService(): { service: EvoService; store: SqliteMemoryStore } {
@@ -100,10 +126,16 @@ async function main(): Promise<void> {
     }
     const text = await recallContext(event, service, config)
     if (config.debug) log(`${event.hook_event_name ?? 'event'} recall ${countItems(text)} memories, ${text.length} chars`)
-    if (text.trim()) process.stdout.write(text)
+    const notice = noticeMessage(event, config, dataDir())
+    const output = hookOutput(text, notice, event)
+    if (output) process.stdout.write(output)
   } finally {
     store.close?.()
   }
+}
+
+function dataDir(): string {
+  return resolveDataPaths().dataDir ?? tmpdir()
 }
 
 /** Hands the turn to a detached child: reflection takes seconds, the hook must not. */
@@ -121,6 +153,7 @@ async function runDetachedReflect(payloadPath: string, config: HookConfig): Prom
   service.setModelRunner(new ClaudeCliModelRunner({ model: config.model }))
   try {
     const delta = await reflectTurn(event, service)
+    if (delta && config.notify) writeNotice(dataDir(), delta)
     if (!config.debug) return
     log(delta
       ? `reflect ok created=${delta.created.length} updated=${delta.updated.length}`
@@ -132,7 +165,7 @@ async function runDetachedReflect(payloadPath: string, config: HookConfig): Prom
 
 /** Hook failures are silent in the session, so they must be recoverable from disk. */
 function log(message: string): void {
-  const path = process.env.EVO_HOOK_LOG?.trim() || join(resolveDataPaths().dataDir ?? tmpdir(), 'hook.log')
+  const path = process.env.EVO_HOOK_LOG?.trim() || join(dataDir(), 'hook.log')
   try { appendFileSync(path, `${new Date().toISOString()} ${message}\n`) } catch { /* logging must never throw */ }
 }
 
@@ -147,6 +180,10 @@ function positive(value: string | undefined): number | undefined {
 }
 
 if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(selfPath)) {
-  main().catch(error => { log(`ERROR ${String(error instanceof Error ? error.stack ?? error.message : error)}`) })
+  main().catch(error => {
+    const reason = String(error instanceof Error ? error.message : error)
+    log(`ERROR ${String(error instanceof Error ? error.stack ?? error.message : error)}`)
+    if (hookConfig().notify) process.stdout.write(JSON.stringify({ systemMessage: `evo · memory unavailable: ${reason}` }))
+  })
     .finally(() => process.exit(0))
 }

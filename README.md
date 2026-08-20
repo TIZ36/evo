@@ -201,8 +201,22 @@ immediately and the work continues in a detached process — a session is never
 blocked by evo. The child runs with `EVO_HOOK_DISABLE=1` so its own hooks exit at
 once; without that guard reflection would recurse.
 
-The hook writes nothing to the session on failure — it always exits 0 — so
-problems are recorded in `<dataDir>/hook.log` instead.
+### What you see
+
+Recall is silent: memory arrives as context, not as UI noise. evo speaks in the
+transcript only twice — through the hook's `systemMessage`, which Claude Code
+renders as its own line:
+
+- after a turn it learned from, on your next prompt: `evo · remembered 2, updated 1`
+- when it is broken: `evo · memory unavailable: <reason>`
+
+Reflection finishes after its turn is over, so its result is left as a
+breadcrumb next to the database and reported once on the following prompt, then
+cleared. `SessionStart` never reports it — Claude Code consumes that event's
+output without rendering a system message.
+
+Failures never interrupt a session: the hook always exits 0, and the full error
+goes to `<dataDir>/hook.log`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -211,7 +225,8 @@ problems are recorded in `<dataDir>/hook.log` instead.
 | `EVO_HOOK_MODEL` | `claude-haiku-4-5-20251001` | Model used for reflection |
 | `EVO_HOOK_RECALL_LIMIT` | `40` | Memories considered per recall |
 | `EVO_HOOK_MAX_CHARS` | `6000` | Character budget of the injected context |
-| `EVO_HOOK_DEBUG` | unset | Set `1` to log every reflection outcome |
+| `EVO_HOOK_NOTIFY` | `1` | Set `0` to remove the transcript line entirely |
+| `EVO_HOOK_DEBUG` | unset | Set `1` to log every recall, import and reflection |
 | `EVO_HOOK_DISABLE` | unset | Set `1` to make the hook a no-op (used for the recursion guard) |
 
 Project memory is keyed by the canonical (symlink-resolved) working directory.
