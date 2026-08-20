@@ -1,7 +1,7 @@
 import type { MemoryScope, ScopeType } from './types.js'
 
 /**
- * Scope tree support: the `/evo-memory/scopes` endpoint and the settings
+ * Scope tree support: the `/evo/scopes` endpoint and the settings
  * panel's hierarchy view are both built from this module. `scopeKey` already
  * encodes hierarchy (`user:a/project:%2Frepo/session:s1`), so the tree is
  * reconstructed by parsing each stored key and grouping by parent prefix.

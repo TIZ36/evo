@@ -2,7 +2,7 @@
 /**
  * Copy the hand-written web client bundle into dist/ so the published package
  * serves it at exports["./client"] (dsh-client-modules serves it under
- * /plugins/evo-memory/client.js). The client is plain JS — no bundling.
+ * /plugins/evo/client.js). The client is plain JS — no bundling.
  */
 import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'

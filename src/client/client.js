@@ -1,22 +1,22 @@
 /**
- * evo-memory native Web panel (DSH client-plugin half).
+ * evo native Web panel (DSH client-plugin half).
  *
  * Plain-JS ModuleLoader bundle. Three surfaces, no overlay:
  *   - Settings → Memory page (settings.section): the ONE place memory is
  *     browsed — scope tree, kind filter, search, list, per-memory detail.
- *   - Composer "evo" chip (conversation.input.left): the hourglass mark plus
+ *   - Composer "evo" chip (conversation.input.left): the capsule mark plus
  *     wordmark. Status indicator and entry point; clicking opens the Settings
  *     page rather than expanding a second list UI.
  *   - Composer dock line (conversation.composer.dock): present only while evo
  *     is actually reflecting. Idle costs zero vertical space.
  *
- * Brand: the hourglass is the only brand asset. Its coral sand is the only
+ * Brand: the capsule is the only brand asset. Its coral fill is the only
  * non-host colour in the plugin; everything else rides DSH design tokens.
  *
- * Data comes from the host API at /evo-memory/*.
+ * Data comes from the host API at /evo/*.
  */
 window.__ModuleLoader__.load({
-  id: 'evo-memory',
+  id: 'evo',
   factory: function (require) {
     var module = { exports: {} }
     var exports = module.exports
@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
     var useEffect = React.useEffect
     var useCallback = React.useCallback
 
-    var API = '/evo-memory'
+    var API = '/evo'
     var KINDS = ['fact', 'preference', 'constraint', 'procedure', 'skill']
     /** Must match the settings.section label below — DOM navigation matches on it. */
     var SECTION_LABEL = 'Memory'
@@ -130,26 +130,24 @@ window.__ModuleLoader__.load({
 
     // ── styles ────────────────────────────────────────────────────────────
     function ensureEvoStyle() {
-      if (document.getElementById('evo-memory-composer-css')) return
+      if (document.getElementById('evo-composer-css')) return
       var tag = document.createElement('style')
-      tag.id = 'evo-memory-composer-css'
-      tag.dataset.plugin = 'evo-memory'
+      tag.id = 'evo-composer-css'
+      tag.dataset.plugin = 'evo'
       tag.textContent =
-        // hourglass mark — the only brand asset, and the only non-host colour
+        // capsule mark — the only brand asset, and the only non-host colour
         '.evo-glass{display:inline-flex;flex:none;--evo-accent:#ff5c5c}' +
         '@supports (color:oklch(0.68 0.19 21)){.evo-glass{--evo-accent:oklch(0.68 0.19 21)}}' +
-        '.evo-glass svg{display:block;transform-origin:50% 50%}' +
-        // idle: the sand has run out — only the settled grain in the lower bulb
-        '.evo-sand-top{opacity:0;transition:opacity .24s var(--ds-ease-in-out,ease-out)}' +
-        '.evo-sand-fall{stroke-dasharray:1.6 8;stroke-dashoffset:-2.5;' +
-        'transition:stroke-dashoffset .24s var(--ds-ease-in-out,ease-out)}' +
-        // reflecting: full stream, and the glass turns over once every 2.4s
-        '.evo-glass[data-busy=true] .evo-sand-top{opacity:1}' +
-        '.evo-glass[data-busy=true] .evo-sand-fall{stroke-dasharray:none;stroke-dashoffset:0}' +
-        '.evo-glass[data-busy=true] svg{animation:evo-turn 4.8s cubic-bezier(.62,0,.2,1) infinite}' +
-        // two 180° turns per cycle, so the loop closes on 360° with no snap-back
-        '@keyframes evo-turn{0%,40%{transform:rotate(0deg)}50%,90%{transform:rotate(180deg)}' +
-        '100%{transform:rotate(360deg)}}' +
+        '.evo-glass svg{display:block}' +
+        // idle: the capsule is full — everything already distilled and stored.
+        // The fill is scaled rather than resized: CSS geometry properties on
+        // <rect> do not apply reliably, transforms do.
+        '.evo-core{fill:currentColor;transform-box:fill-box;transform-origin:left center;' +
+        'transition:transform .28s var(--ds-ease-in-out,ease-out),fill .28s var(--ds-ease-in-out,ease-out)}' +
+        // reflecting: the fill draws back in coral and refills every 2.4s
+        '.evo-glass[data-busy=true] .evo-core{fill:var(--evo-accent);' +
+        'animation:evo-fill 2.4s cubic-bezier(.62,0,.2,1) infinite}' +
+        '@keyframes evo-fill{0%,100%{transform:scaleX(.34)}50%{transform:scaleX(1)}}' +
         '@keyframes evo-fade-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}' +
         // composer chip: borderless at rest, so idle evo costs nothing visually
         '.evo-chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;' +
@@ -242,42 +240,35 @@ window.__ModuleLoader__.load({
         '.evo-activity{display:flex;gap:8px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-secondary,#555);' +
         'padding:2px 0;align-items:baseline}' +
         '.evo-activity-dot{flex:none;width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#8a8a8a);align-self:center}' +
-        // Reduced motion keeps the state legible without the turn: busy still
-        // shows the full sand stream, it just stops flipping.
+        // Reduced motion keeps the state legible without the motion: busy
+        // still shows the coral fill, it just stops sweeping.
         '@media (prefers-reduced-motion:reduce){' +
-        '.evo-glass[data-busy=true] svg{animation:none}.evo-dock{animation:none}}'
+        '.evo-glass[data-busy=true] .evo-core{animation:none;transform:scaleX(.6)}' +
+        '.evo-dock{animation:none}}'
       document.head.appendChild(tag)
     }
 
-    // ── evo mark: the hourglass ───────────────────────────────────────────
+    // ── evo mark: the capsule ─────────────────────────────────────────────
     /**
-     * Capped bars, pinched bowls, coral sand. Time settling into sediment is
-     * what this plugin does, so the glyph says it directly.
+     * A capsule with a fill inside it. What this plugin does is hold things,
+     * so the glyph is a container and how full it is.
      *
-     *   idle       the sand has run out; one settled grain in the lower bulb
-     *   busy       full stream, and the glass turns over every 2.4s
+     *   idle       full fill in host text colour — everything is stored
+     *   busy       the fill draws back in coral and refills every 2.4s
      *
-     * The frame is `currentColor` so it inherits host text colour in both
-     * themes; only the sand carries the evo accent.
+     * The shell is `currentColor` so it inherits host text colour in both
+     * themes; only the fill carries the evo accent, and only while busy.
      */
     function EvoMark(props) {
       var busy = props.busy === true
       var size = props.size || 15
-      var frame = { stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }
       return h('span', { className: 'evo-glass', 'data-busy': busy ? 'true' : 'false' },
         h('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-          h('path', Object.assign({ d: 'M4.1 2.7 H11.9' }, frame)),
-          h('path', Object.assign({ d: 'M4.1 13.3 H11.9' }, frame)),
-          h('path', Object.assign({ d: 'M5.5 2.7 C5.5 5.9 8 6.9 8 8 C8 9.1 5.5 10.1 5.5 13.3' }, frame)),
-          h('path', Object.assign({ d: 'M10.5 2.7 C10.5 5.9 8 6.9 8 8 C8 9.1 10.5 10.1 10.5 13.3' }, frame)),
-          h('path', {
-            className: 'evo-sand-top', d: 'M8.75 5.15 C8.25 5.7 8.05 6.3 8.05 6.85',
-            stroke: 'var(--evo-accent)', strokeWidth: 1.7, strokeLinecap: 'round',
+          h('rect', {
+            x: 1, y: 5.25, width: 14, height: 5.5, rx: 2.75,
+            stroke: 'currentColor', strokeWidth: 1.5, strokeLinejoin: 'round',
           }),
-          h('path', {
-            className: 'evo-sand-fall', d: 'M8 6.8 V10.9',
-            stroke: 'var(--evo-accent)', strokeWidth: 1.2, strokeLinecap: 'round',
-          })))
+          h('rect', { className: 'evo-core', x: 2.6, y: 6.9, width: 10.8, height: 2.2, rx: 1.1 })))
     }
 
     // ── scope helpers ─────────────────────────────────────────────────────
@@ -651,17 +642,17 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       ctx.slots.inject('settings.section', function () {
         return ctx.slots.register(
-          { name: 'settings.section', id: 'evo-memory', order: 25, label: function () { return SECTION_LABEL } },
+          { name: 'settings.section', id: 'evo', order: 25, label: function () { return SECTION_LABEL } },
           function () { return h(EvoExplorer, null) })
       })
       ctx.slots.inject('conversation.input.left', function () {
         return ctx.slots.register(
-          { name: 'conversation.input.left', id: 'evo-memory', order: 0, label: function () { return 'evo' } },
+          { name: 'conversation.input.left', id: 'evo', order: 0, label: function () { return 'evo' } },
           EvoChip)
       })
       ctx.slots.inject('conversation.composer.dock', function () {
         return ctx.slots.register(
-          { name: 'conversation.composer.dock', id: 'evo-memory', order: 10, label: function () { return 'evo-memory' } },
+          { name: 'conversation.composer.dock', id: 'evo', order: 10, label: function () { return 'evo' } },
           EvoDock)
       })
     }

@@ -2,36 +2,41 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { memoryScopeSchema, type MemoryKind, type MemoryQuery, type MemoryScope } from '../core/types.js'
 import { parseScopeKey } from '../core/scope-tree.js'
-import type { EvoMemoryCordisService } from './service.js'
+import type { EvoCordisService } from './service.js'
 
 /**
- * evo-memory HTTP API, mounted at `/evo-memory/*` on the DSH web server
+ * evo HTTP API, mounted at `/evo/*` on the DSH web server
  * (the `/api` prefix is owned by the DSH web transport, so a plugin bridge
  * must use its own path). Endpoints are loopback-local by default and exist
  * as the reserved integration surface for external frontends:
  *
- *   GET  /evo-memory/status
- *   GET  /evo-memory/memories?scopeType=&scopeId=&kind=&text=&tags=&limit=
- *   GET  /evo-memory/memories/:id
- *   GET  /evo-memory/events?limit=
- *   POST /evo-memory/consolidate            body { scope: {type, id?} }
- *   POST /evo-memory/import-workspace       body { cwd, force? }
+ *   GET  /evo/status
+ *   GET  /evo/memories?scopeType=&scopeId=&kind=&text=&tags=&limit=
+ *   GET  /evo/memories/:id
+ *   GET  /evo/events?limit=
+ *   POST /evo/consolidate            body { scope: {type, id?} }
+ *   POST /evo/import-workspace       body { cwd, force? }
+ *
+ * The pre-rename `/evo-memory/*` prefix stays mounted as an alias.
  */
-export const MEMORY_API_PATH = '/evo-memory'
+export const MEMORY_API_PATH = '/evo'
+/** Route prefix used before the package was renamed from `evo-memory` to `evo`. */
+export const LEGACY_MEMORY_API_PATH = '/evo-memory'
 
-export function registerMemoryApi(ctx: Context, service: EvoMemoryCordisService): void {
+export function registerMemoryApi(ctx: Context, service: EvoCordisService): void {
   const webServer = ctx.get('webServer')
   if (!webServer) return
-  ctx.effect(() => webServer.register({ kind: 'prefix', path: MEMORY_API_PATH, handler: createMemoryApiHandler(service) }),
-    'evo-memory: api routes')
+  const handler = createMemoryApiHandler(service)
+  ctx.effect(() => webServer.register({ kind: 'prefix', path: MEMORY_API_PATH, handler }), 'evo: api routes')
+  ctx.effect(() => webServer.register({ kind: 'prefix', path: LEGACY_MEMORY_API_PATH, handler }), 'evo: legacy api routes')
 }
 
-export function createMemoryApiHandler(service: EvoMemoryCordisService): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function createMemoryApiHandler(service: EvoCordisService): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://evo.local')
       const pathname = url.pathname
-      const rest = pathname === MEMORY_API_PATH ? '/' : pathname.startsWith(`${MEMORY_API_PATH}/`) ? pathname.slice(MEMORY_API_PATH.length) : null
+      const rest = stripApiPrefix(pathname)
       if (rest === null) return send(res, 404, { error: 'not found' })
 
       if (req.method === 'GET' && (rest === '/' || rest === '/status')) return send(res, 200, service.status())
@@ -96,6 +101,15 @@ function parseMemoryQuery(url: URL): MemoryQuery {
   const limit = Number(params.get('limit') ?? 100)
   if (Number.isFinite(limit)) query.limit = limit
   return query
+}
+
+/** Path below the API prefix, accepting the legacy `/evo-memory` prefix too. */
+function stripApiPrefix(pathname: string): string | null {
+  for (const prefix of [MEMORY_API_PATH, LEGACY_MEMORY_API_PATH]) {
+    if (pathname === prefix) return '/'
+    if (pathname.startsWith(`${prefix}/`)) return pathname.slice(prefix.length)
+  }
+  return null
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {

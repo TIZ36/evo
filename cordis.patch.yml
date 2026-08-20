@@ -1,23 +1,23 @@
-# evo-memory DeepSeek Harness bundle. Installed profiles apply this layer after
+# evo DeepSeek Harness bundle. Installed profiles apply this layer after
 # their existing bundles and before the user's cordis.patch.yml overrides.
 - insert:
-    - id: evo-memory
-      name: evo-memory/cordis
+    - id: evo
+      name: evo/cordis
       config: {}
 
-    - id: evo-memory-deepseek
-      name: evo-memory/deepseek
+    - id: evo-deepseek
+      name: evo/deepseek
       config:
-        provider: !!js process.env.EVO_MEMORY_PROVIDER?.trim() || 'deepseek-official'
-        model: !!js process.env.EVO_MEMORY_MODEL?.trim() || 'deepseek-v4-flash'
+        provider: !!js process.env.EVO_PROVIDER?.trim() || process.env.EVO_MEMORY_PROVIDER?.trim() || 'deepseek-official'
+        model: !!js process.env.EVO_MODEL?.trim() || process.env.EVO_MEMORY_MODEL?.trim() || 'deepseek-v4-flash'
         recallLimit: 40
         maxContextChars: 6000
         reflect: true
 
     # Web client carrier: a no-op host row named by the bare package so the
-    # dsh-client-modules scan discovers evo-memory's dsh.client bundle and
-    # serves it as /plugins/evo-memory/client.js (subpath names cannot resolve
+    # dsh-client-modules scan discovers evo's dsh.client bundle and
+    # serves it as /plugins/evo/client.js (subpath names cannot resolve
     # <name>/package.json and would never be discovered).
-    - id: evo-memory-web
-      name: evo-memory
+    - id: evo-web
+      name: evo
       config: {}

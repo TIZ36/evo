@@ -17,7 +17,7 @@ export class SqliteMemoryStore implements MemoryStore, MemoryEventSink {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;')
     this.db.exec(SCHEMA_SQL)
     const version = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
-    if (Number(version?.version) !== SCHEMA_VERSION) throw new Error(`unsupported evo-memory schema version: ${String(version?.version)}`)
+    if (Number(version?.version) !== SCHEMA_VERSION) throw new Error(`unsupported evo schema version: ${String(version?.version)}`)
   }
 
   async get(id: string): Promise<MemoryItem | null> {

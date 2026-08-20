@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EvoMemoryService } from '../../src/core/evo-memory.js'
+import { EvoService } from '../../src/core/evo.js'
 import type { MemoryItem, MemoryScope } from '../../src/core/types.js'
 import type { MemoryStore, ModelRunner } from '../../src/core/contracts.js'
 
@@ -18,17 +18,17 @@ class MemoryStoreStub implements MemoryStore {
 const scope: MemoryScope = { type: 'project', id: '/repo' }
 const runner = (response: unknown): ModelRunner => ({ complete: async () => JSON.stringify(response) })
 
-describe('EvoMemoryService', () => {
+describe('EvoService', () => {
   it('remembers and renders bounded recall context', async () => {
     const store = new MemoryStoreStub()
-    const service = new EvoMemoryService({ store, now: () => 10, id: () => 'm1' })
+    const service = new EvoService({ store, now: () => 10, id: () => 'm1' })
     await service.remember({ scope, kind: 'constraint', title: 'Tests', content: 'Always run tests', tags: [] })
     expect(await service.context({ scopes: [scope], maxChars: 200 })).toContain('**Tests**: Always run tests')
   })
 
   it('reflects model candidates and updates a same-title memory', async () => {
     const store = new MemoryStoreStub()
-    const service = new EvoMemoryService({ store, model: runner({ memories: [
+    const service = new EvoService({ store, model: runner({ memories: [
       { kind: 'preference', title: 'Language', content: 'Use Chinese', tags: ['user'] },
     ] }), now: () => 20, id: () => 'm1' })
     await service.remember({ scope, kind: 'preference', title: 'Language', content: 'Use English', tags: [] })
@@ -39,7 +39,7 @@ describe('EvoMemoryService', () => {
 
   it('refuses an empty consolidation result and preserves stored memories', async () => {
     const store = new MemoryStoreStub()
-    const service = new EvoMemoryService({ store, model: runner({ memories: [] }), now: () => 20, id: () => 'm1' })
+    const service = new EvoService({ store, model: runner({ memories: [] }), now: () => 20, id: () => 'm1' })
     await service.remember({ scope, kind: 'fact', title: 'One', content: 'value', tags: [] })
     await expect(service.consolidate(scope)).rejects.toThrow('empty')
     expect(await store.list()).toHaveLength(1)

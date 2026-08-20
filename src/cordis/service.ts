@@ -1,7 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { MemoryCandidate, MemoryQuery, MemoryScope, Turn } from '../core/types.js'
 import type { MemoryEventRecord, ModelRunner } from '../core/contracts.js'
-import { EvoMemoryService } from '../core/evo-memory.js'
+import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter, type WorkspaceImportResult } from '../workspace/importer.js'
 import { buildScopeTree, type ScopeTreeNode } from '../core/scope-tree.js'
@@ -9,7 +9,7 @@ import { resolveDataPaths } from '../config/paths.js'
 import type { Config } from './config.js'
 
 declare module '@deepseek-ai/cordis' {
-  interface Context { evoMemory: EvoMemoryCordisService }
+  interface Context { evo: EvoCordisService }
 }
 
 export type MemoryStatus = {
@@ -19,19 +19,19 @@ export type MemoryStatus = {
   busy: boolean
 }
 
-export class EvoMemoryCordisService extends Service {
-  readonly core: EvoMemoryService
+export class EvoCordisService extends Service {
+  readonly core: EvoService
   readonly databasePath: string
   private readonly store: SqliteMemoryStore
   private workspace: WorkspaceImporter | undefined
   private busyCount = 0
 
   constructor(ctx: Context, config: Config = {}) {
-    super(ctx, 'evoMemory')
+    super(ctx, 'evo')
     this.databasePath = resolveDataPaths(config).databasePath
     this.store = new SqliteMemoryStore(this.databasePath)
-    this.core = new EvoMemoryService({ store: this.store, events: this.store })
-    ctx.effect(() => () => this.store.close(), 'evoMemory.close')
+    this.core = new EvoService({ store: this.store, events: this.store })
+    ctx.effect(() => () => this.store.close(), 'evo.close')
   }
 
   remember(input: MemoryCandidate & { scope: MemoryScope }) { return this.core.remember(input) }

@@ -1,5 +1,5 @@
 {
-  "name": "evo-memory",
+  "name": "evo",
   "version": "0.2.0",
   "description": "Provider-neutral evolving memory service and Cordis plugin for DeepSeek Harness",
   "type": "module",
@@ -8,12 +8,12 @@
   "author": "TIZ36",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TIZ36/evo-memory.git"
+    "url": "git+https://github.com/TIZ36/evo.git"
   },
   "bugs": {
-    "url": "https://github.com/TIZ36/evo-memory/issues"
+    "url": "https://github.com/TIZ36/evo/issues"
   },
-  "homepage": "https://github.com/TIZ36/evo-memory#readme",
+  "homepage": "https://github.com/TIZ36/evo#readme",
   "engines": {
     "node": ">=22.19.0"
   },

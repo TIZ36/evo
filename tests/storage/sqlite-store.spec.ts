@@ -13,7 +13,7 @@ const item = (id: string, scope = project, overrides: Partial<MemoryItem> = {}):
   usageCount: 0, createdAt: 10, updatedAt: 10, ...overrides,
 })
 const store = () => {
-  const value = new SqliteMemoryStore(join(mkdtempSync(join(tmpdir(), 'evo-memory-')), 'memory.db'))
+  const value = new SqliteMemoryStore(join(mkdtempSync(join(tmpdir(), 'evo-')), 'memory.db'))
   stores.push(value)
   return value
 }

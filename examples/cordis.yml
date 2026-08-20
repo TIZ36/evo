@@ -1,10 +1,10 @@
 # Load after the Harness LLM and system-prompt services.
-- id: evo-memory
-  name: evo-memory/cordis
+- id: evo
+  name: evo/cordis
   config: {}
 
-- id: evo-memory-deepseek
-  name: evo-memory/deepseek
+- id: evo-deepseek
+  name: evo/deepseek
   config:
     # Must match a provider/model route already registered in DeepSeek Harness.
     provider: deepseek-official
@@ -15,6 +15,6 @@
 
 # Optional web client carrier: bare package name so dsh-client-modules
 # discovers the dsh.client bundle and serves the Settings → Memory panel.
-- id: evo-memory-web
-  name: evo-memory
+- id: evo-web
+  name: evo
   config: {}

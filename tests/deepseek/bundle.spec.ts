@@ -14,9 +14,9 @@ describe('DeepSeek profile bundle', () => {
 
   it('inserts the memory service before its DeepSeek adapter', () => {
     const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
-    expect(patch.indexOf('id: evo-memory\n')).toBeLessThan(patch.indexOf('id: evo-memory-deepseek'))
-    expect(patch).toContain("EVO_MEMORY_PROVIDER")
-    expect(patch).toContain("EVO_MEMORY_MODEL")
+    expect(patch.indexOf('id: evo\n')).toBeLessThan(patch.indexOf('id: evo-deepseek'))
+    expect(patch).toContain("EVO_PROVIDER")
+    expect(patch).toContain("EVO_MODEL")
   })
 
   it('declares the web client half discoverable by dsh-client-modules', () => {
@@ -24,16 +24,16 @@ describe('DeepSeek profile bundle', () => {
     expect(manifest.dsh.client).toMatchObject({ platform: 'web' })
     expect(manifest.exports['./client']).toMatchObject({ default: './dist/client.js' })
     const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
-    expect(patch.indexOf('id: evo-memory-web')).toBeGreaterThan(patch.indexOf('id: evo-memory-deepseek'))
-    expect(patch).toMatch(/name: evo-memory\n/)
+    expect(patch.indexOf('id: evo-web')).toBeGreaterThan(patch.indexOf('id: evo-deepseek'))
+    expect(patch).toMatch(/name: evo\n/)
   })
 })
 
 describe('web client bundle', () => {
-  it('is a ModuleLoader factory registering the evo-memory entry', () => {
+  it('is a ModuleLoader factory registering the evo entry', () => {
     const client = readFileSync(join(root, 'src/client/client.js'), 'utf8')
     expect(client).toContain('window.__ModuleLoader__.load({')
-    expect(client).toContain("id: 'evo-memory'")
+    expect(client).toContain("id: 'evo'")
     expect(client).toContain("settings.section")
     expect(client).toContain("exports.inject = ['slots']")
   })

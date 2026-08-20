@@ -16,7 +16,7 @@ const candidateSchema = z.object({
 })
 const responseSchema = z.object({ memories: z.array(candidateSchema).max(100) })
 
-export type EvoMemoryOptions = {
+export type EvoOptions = {
   store: MemoryStore
   model?: ModelRunner
   events?: MemoryEventSink
@@ -24,14 +24,14 @@ export type EvoMemoryOptions = {
   id?: () => string
 }
 
-export class EvoMemoryService {
+export class EvoService {
   readonly store: MemoryStore
   private model: ModelRunner | undefined
   private readonly events: MemoryEventSink
   private readonly now: () => number
   private readonly id: () => string
 
-  constructor(options: EvoMemoryOptions) {
+  constructor(options: EvoOptions) {
     this.store = options.store; this.model = options.model; this.events = options.events ?? noopEventSink
     this.now = options.now ?? Date.now; this.id = options.id ?? randomUUID
   }
@@ -72,14 +72,14 @@ export class EvoMemoryService {
       const now = this.now()
       if (old) {
         const item: MemoryItem = { ...old, kind: candidate.kind, content: candidate.content, tags: candidate.tags ?? old.tags,
-          updatedAt: now, source: { runtime: 'evo-memory', sessionId: turn.sessionId, turn: turn.turn },
+          updatedAt: now, source: { runtime: 'evo', sessionId: turn.sessionId, turn: turn.turn },
           ...(candidate.confidence === undefined ? {} : { confidence: candidate.confidence }) }
         await this.store.put(item); delta.updated.push(item); await this.events.emit({ type: 'memory.updated', item })
       } else {
         const item = await this.remember({ kind: candidate.kind, title: candidate.title, content: candidate.content, scope,
           ...(candidate.tags === undefined ? {} : { tags: candidate.tags }),
           ...(candidate.confidence === undefined ? {} : { confidence: candidate.confidence }) })
-        item.source = { runtime: 'evo-memory', sessionId: turn.sessionId, turn: turn.turn }
+        item.source = { runtime: 'evo', sessionId: turn.sessionId, turn: turn.turn }
         await this.store.put(item); delta.created.push(item)
       }
     }

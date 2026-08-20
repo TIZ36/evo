@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import * as plugin from '../../src/cordis/index.js'
-import { createMemoryApiHandler, MEMORY_API_PATH } from '../../src/cordis/web.js'
-import type { EvoMemoryCordisService } from '../../src/cordis/service.js'
+import { createMemoryApiHandler, LEGACY_MEMORY_API_PATH, MEMORY_API_PATH } from '../../src/cordis/web.js'
+import type { EvoCordisService } from '../../src/cordis/service.js'
 
 class FakeResponse {
   status = 0
@@ -26,7 +26,7 @@ function fakeRequest(method: string, url: string, body?: unknown) {
   return req
 }
 
-async function call(service: EvoMemoryCordisService, method: string, url: string, body?: unknown) {
+async function call(service: EvoCordisService, method: string, url: string, body?: unknown) {
   const handler = createMemoryApiHandler(service)
   const res = new FakeResponse()
   await handler(fakeRequest(method, url, body) as never, res as never)
@@ -37,10 +37,10 @@ async function service() {
   const ctx = new Context()
   const dbPath = join(mkdtempSync(join(tmpdir(), 'evo-web-')), 'memory.db')
   const fiber = await ctx.plugin(plugin, { databasePath: dbPath })
-  return { ctx, fiber, dbPath, svc: ctx.evoMemory }
+  return { ctx, fiber, dbPath, svc: ctx.evo }
 }
 
-describe('evo-memory HTTP API', () => {
+describe('evo HTTP API', () => {
   it('serves status, memories, and single-memory reads', async () => {
     const { fiber, svc } = await service()
     try {
@@ -134,6 +134,18 @@ describe('evo-memory HTTP API', () => {
       expect((response.json as { result: { created: number } }).result.created).toBe(1)
       const missing = await call(svc, 'POST', `${MEMORY_API_PATH}/import-workspace`, {})
       expect(missing.status).toBe(400)
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('still answers on the pre-rename /evo-memory prefix', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const status = await call(svc, 'GET', `${LEGACY_MEMORY_API_PATH}/status`)
+      expect(status.status).toBe(200)
+      expect(status.json).toMatchObject({ ok: true })
+      expect((await call(svc, 'GET', '/evo-memoryish/status')).status).toBe(404)
     } finally {
       await fiber.dispose()
     }

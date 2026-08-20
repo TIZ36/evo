@@ -26,7 +26,7 @@ describe('workspace import trigger', () => {
     const assembleContext = { agent: { session } } as unknown as AssembleContext
     await ctx.waterfall('system-prompt/assemble', assembly, assembleContext, () => Promise.resolve(assembly))
 
-    const items = await ctx.evoMemory.recall({ scopes: [{ type: 'project', id: cwd }] })
+    const items = await ctx.evo.recall({ scopes: [{ type: 'project', id: cwd }] })
     expect(items).toHaveLength(2)
     expect(items.some(item => item.title === 'CLAUDE.md' && item.kind === 'fact')).toBe(true)
     expect(items.some(item => item.title === 'AGENTS.md' && item.kind === 'constraint')).toBe(true)
@@ -51,7 +51,7 @@ describe('workspace import trigger', () => {
     const assembleContext = { agent: { session } } as unknown as AssembleContext
     await ctx.waterfall('system-prompt/assemble', assembly, assembleContext, () => Promise.resolve(assembly))
 
-    expect(await ctx.evoMemory.recall({ scopes: [{ type: 'project', id: cwd }] })).toHaveLength(0)
+    expect(await ctx.evo.recall({ scopes: [{ type: 'project', id: cwd }] })).toHaveLength(0)
 
     await fiberAdapter.dispose()
     await fiberService.dispose()

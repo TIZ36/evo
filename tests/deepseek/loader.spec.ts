@@ -15,7 +15,7 @@ describe('DeepSeek Harness loader composition', () => {
     const prompt = await ctx.plugin(SystemPrompt, {})
     const memory = await ctx.plugin(memoryPlugin, { databasePath: join(mkdtempSync(join(tmpdir(), 'evo-loader-')), 'memory.db') })
     const adapter = await ctx.plugin(deepseekPlugin, { provider: 'deepseek', model: 'deepseek-chat', reflect: false })
-    expect(ctx.evoMemory).toBeDefined()
+    expect(ctx.evo).toBeDefined()
     expect((await ctx.systemPrompt.assemble()).contexts).toEqual([])
     await adapter.dispose(); await memory.dispose(); await prompt.dispose(); await llm.dispose()
   })

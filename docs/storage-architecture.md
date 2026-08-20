@@ -1,9 +1,9 @@
-# evo-memory 存储架构
+# evo 存储架构
 
 ## 分层
 
 ```text
-evo-memory core
+evo core
 ├── MemoryItem / MemoryScope
 ├── MemoryStore
 ├── Reflector
@@ -39,7 +39,7 @@ interface MemoryStore {
 
 ## 默认路径策略
 
-默认路径遵循宿主平台的数据目录约定，并使用 `evo-memory` 作为应用子目录。配置优先级建议为：显式运行时配置、环境变量、平台默认目录。路径解析属于 infrastructure 层，不能散落在 core 业务代码中。
+默认路径遵循宿主平台的数据目录约定，并使用 `evo` 作为应用子目录。配置优先级建议为：显式运行时配置、环境变量、平台默认目录。路径解析属于 infrastructure 层，不能散落在 core 业务代码中。
 
 ## 物化策略
 

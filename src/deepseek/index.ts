@@ -12,8 +12,8 @@ import type { WorkspaceImportResult } from '../workspace/importer.js'
 export { DeepSeekModelRunner } from './model-runner.js'
 export * from './events.js'
 
-export const name = 'evo-memory-deepseek'
-export const inject = ['evoMemory', 'llm', 'systemPrompt']
+export const name = 'evo-deepseek'
+export const inject = ['evo', 'llm', 'systemPrompt']
 
 export interface Config {
   provider: string
@@ -39,9 +39,9 @@ export const Config: z<Config> = z.object({
 })
 
 export function apply(ctx: Context, config: Config): void {
-  const logger = ctx.logger('evo-memory')
-  const releaseModel = ctx.evoMemory.setModelRunner(new DeepSeekModelRunner(ctx, config))
-  ctx.effect(() => releaseModel, 'evoMemory.releaseModel')
+  const logger = ctx.logger('evo')
+  const releaseModel = ctx.evo.setModelRunner(new DeepSeekModelRunner(ctx, config))
+  ctx.effect(() => releaseModel, 'evo.releaseModel')
 
   // One-shot workspace ingestion per project: imported once per process, with an
   // in-flight promise shared by concurrent sessions in the same project.
@@ -51,7 +51,7 @@ export function apply(ctx: Context, config: Config): void {
     const key = scopeKey({ type: 'project', id: cwd })
     if (imported.has(key)) return Promise.resolve()
     const existing = importing.get(key)
-    const promise = existing ?? ctx.evoMemory.importWorkspace(cwd).then(result => {
+    const promise = existing ?? ctx.evo.importWorkspace(cwd).then(result => {
       imported.add(key)
       if (result.created + result.updated > 0) {
         logger.info('workspace import %s: %d created, %d updated, %d unchanged (%d files)',
@@ -72,9 +72,9 @@ export function apply(ctx: Context, config: Config): void {
     if (config.workspaceImport !== false && session.header.cwd) {
       await ensureWorkspaceImported(session.header.cwd)
     }
-    const text = await ctx.evoMemory.context({ scopes: scopesForSession(session), limit: config.recallLimit ?? 40, maxChars: config.maxContextChars ?? 6000 })
+    const text = await ctx.evo.context({ scopes: scopesForSession(session), limit: config.recallLimit ?? 40, maxChars: config.maxContextChars ?? 6000 })
     if (!text) return result
-    return { ...result, contexts: [...result.contexts, { name: 'evo-memory', text }] }
+    return { ...result, contexts: [...result.contexts, { name: 'evo', text }] }
   })
 
   if (config.reflect !== false) {
@@ -82,7 +82,7 @@ export function apply(ctx: Context, config: Config): void {
       if (event.type !== 'turn/end') return
       const turn = extractCompletedTurn(session, event.data.turn)
       if (!turn) return
-      void ctx.evoMemory.reflect(turn).catch(error => logger.warn('reflection failed: %s', String(error)))
+      void ctx.evo.reflect(turn).catch(error => logger.warn('reflection failed: %s', String(error)))
     })
   }
 }
