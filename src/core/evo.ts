@@ -4,7 +4,7 @@ import type { MemoryEventSink, MemoryStore, ModelRunner } from './contracts.js'
 import { noopEventSink } from './contracts.js'
 import { memoryKindSchema, memoryScopeSchema, scopeKey, type ConsolidationResult, type MemoryCandidate, type MemoryDelta, type MemoryItem, type MemoryQuery, type MemoryScope, type Turn } from './types.js'
 import { parseModelJson } from './json-model.js'
-import { consolidationPrompt, reflectionPrompt, renderMemoryContext } from './prompt.js'
+import { consolidationPrompt, reflectionCap, reflectionPrompt, renderMemoryContext } from './prompt.js'
 
 const candidateSchema = z.object({
   kind: memoryKindSchema,
@@ -14,7 +14,17 @@ const candidateSchema = z.object({
   tags: z.array(z.string().min(1)).max(20).optional(),
   confidence: z.number().min(0).max(1).optional(),
 })
-const responseSchema = z.object({ memories: z.array(candidateSchema).max(100) })
+const responseSchema = z.object({
+  memories: z.array(candidateSchema).max(100),
+  /** Titles the batch disproved. Absent from older reflectors, so it stays optional. */
+  evict: z.array(z.string().min(1)).max(100).optional(),
+})
+
+/** Memories evo distilled itself — the only ones it may deduplicate against or evict.
+    `evo-memory` is the name it wrote under before the package was renamed; stores
+    predating the rename still hold those rows, and they are just as much its own. */
+const OWN_RUNTIMES = new Set(['evo', 'evo-memory'])
+const isOwn = (item: MemoryItem) => OWN_RUNTIMES.has(item.source?.runtime ?? '')
 
 export type EvoOptions = {
   store: MemoryStore
@@ -61,29 +71,63 @@ export class EvoService {
     await this.store.delete(id); await this.events.emit({ type: 'memory.deleted', id })
   }
 
+  /** One turn is a batch of one; the distilling rules are the same either way. */
   async reflect(turn: Turn, signal?: AbortSignal): Promise<MemoryDelta> {
-    const model = this.requireModel()
-    const parsed = responseSchema.parse(parseModelJson(await model.complete({ purpose: 'reflect', prompt: reflectionPrompt(turn), ...(signal ? { signal } : {}) })))
-    const existing = await this.store.list({ scopes: [turn.scope], limit: 1000 })
+    return this.reflectBatch([turn], signal)
+  }
+
+  /**
+   * Distil a batch of turns in a single model call.
+   *
+   * The reflector is told what this scope already stores and how many memories
+   * it may return, because neither is knowable from the turns alone: without
+   * the stored titles it renames yesterday's fact into a new row, and without a
+   * cap it quotes a long answer back as eight durable memories.
+   *
+   * Only memories evo itself distilled take part. Imported workspace files are
+   * a projection of what is on disk — evo neither deduplicates against them nor
+   * lets a model evict them, or one reflection could delete the user's rules.
+   */
+  async reflectBatch(turns: Turn[], signal?: AbortSignal): Promise<MemoryDelta> {
     const delta: MemoryDelta = { created: [], updated: [], deleted: [] }
-    for (const candidate of parsed.memories) {
-      const scope = candidate.scope ?? turn.scope
-      const old = existing.find(item => scopeKey(item.scope) === scopeKey(scope) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase())
+    const first = turns[0]
+    if (!first) return delta
+    const model = this.requireModel()
+    const scope = first.scope
+    const existing = await this.store.list({ scopes: [scope], limit: 1000 })
+    const own = existing.filter(isOwn)
+    const prompt = reflectionPrompt(turns, { cap: reflectionCap(turns.length), existing: own.map(item => item.title) })
+    const parsed = responseSchema.parse(parseModelJson(await model.complete({ purpose: 'reflect', prompt, ...(signal ? { signal } : {}) })))
+    const last = turns[turns.length - 1]!
+    const source = { runtime: 'evo', sessionId: last.sessionId, turn: last.turn }
+
+    for (const candidate of parsed.memories.slice(0, reflectionCap(turns.length))) {
+      const at = candidate.scope ?? scope
+      const old = existing.find(item => scopeKey(item.scope) === scopeKey(at) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase())
       const now = this.now()
       if (old) {
         const item: MemoryItem = { ...old, kind: candidate.kind, content: candidate.content, tags: candidate.tags ?? old.tags,
-          updatedAt: now, source: { runtime: 'evo', sessionId: turn.sessionId, turn: turn.turn },
+          updatedAt: now, source,
           ...(candidate.confidence === undefined ? {} : { confidence: candidate.confidence }) }
         await this.store.put(item); delta.updated.push(item); await this.events.emit({ type: 'memory.updated', item })
       } else {
-        const item = await this.remember({ kind: candidate.kind, title: candidate.title, content: candidate.content, scope,
+        const item = await this.remember({ kind: candidate.kind, title: candidate.title, content: candidate.content, scope: at,
           ...(candidate.tags === undefined ? {} : { tags: candidate.tags }),
           ...(candidate.confidence === undefined ? {} : { confidence: candidate.confidence }) })
-        item.source = { runtime: 'evo', sessionId: turn.sessionId, turn: turn.turn }
+        item.source = source
         await this.store.put(item); delta.created.push(item)
       }
     }
-    await this.events.emit({ type: 'memory.reflected', turn, delta })
+
+    for (const title of parsed.evict ?? []) {
+      const doomed = own.find(item => item.title.toLocaleLowerCase() === title.trim().toLocaleLowerCase())
+      /* A title the batch also rewrote is a correction, not a retraction: keep the new value. */
+      if (!doomed || delta.updated.some(item => item.id === doomed.id) || delta.created.some(item => item.id === doomed.id)) continue
+      await this.forget(doomed.id)
+      delta.deleted.push(doomed.id)
+    }
+
+    await this.events.emit({ type: 'memory.reflected', turn: last, delta })
     return delta
   }
 

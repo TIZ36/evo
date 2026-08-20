@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -4131,20 +4131,49 @@ function renderMemoryContext(items, maxChars = 6e3) {
 	}
 	return output === head ? "" : output.trimEnd();
 }
-function reflectionPrompt(turn) {
-	return `Extract only durable, reusable memory from this completed agent turn. Do not save transient task state, guesses, secrets, credentials, or raw logs. Return JSON only: {"memories":[{"kind":"fact|preference|constraint|procedure|skill","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}]}. Return an empty memories array when nothing is durable.\n\nUser:\n${turn.user}\n\nAssistant:\n${turn.assistant}\n\nTools:\n${(turn.tools ?? []).join(", ")}`;
+/** Memories a batch may produce, scaled to its size: one turn rarely earns more than one. */
+function reflectionCap(turns, ceiling = 4) {
+	return Math.max(1, Math.min(ceiling, 1 + Math.floor(turns / 3)));
+}
+/**
+* One prompt for the whole batch. Distilling turn by turn cannot see what a
+* batch makes obvious — the pit stepped into three times, the path that only
+* looks like a procedure once it repeats — and pays a model call per turn to
+* miss it.
+*/
+function reflectionPrompt(turns, context) {
+	const body = turns.map((turn, index) => `--- turn ${index + 1} ---\nUser:\n${turn.user}\n\nAssistant:\n${turn.assistant}\n\nTools: ${(turn.tools ?? []).join(", ")}`).join("\n\n");
+	const known = context.existing.length ? `\n\nMemory titles already stored in this scope. Reuse a title verbatim to correct or extend that memory; list a title under "evict" only when these turns prove it wrong. Never restate one under a new title:\n${context.existing.map((title) => `- ${title}`).join("\n")}` : "";
+	return `Extract only durable, reusable memory from these ${turns.length} completed agent turn(s). Do not save transient task state, guesses, secrets, credentials, or raw logs.
+
+Prefer what recurs across turns: a pit stepped into more than once, a convention confirmed again, an operating path that took shape. One-off details of a single task are not durable, however true they are — a topic merely explained at length is not durable either.
+
+Return at most ${context.cap} memories, and prefer fewer. Return an empty memories array when nothing is durable; that is the normal outcome for an ordinary turn.
+
+Return JSON only: {"memories":[{"kind":"fact|preference|constraint|procedure|skill","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"]}${known}
+
+${body}`;
 }
 function consolidationPrompt(items) {
 	return `Consolidate these memories. Merge duplicates, resolve contradictions in favor of newer and higher-confidence evidence, and preserve distinct durable facts. Never invent information. Return JSON only with the same {"memories":[...]} shape.\n\n${JSON.stringify(items)}`;
 }
-const responseSchema = object({ memories: array(object({
-	kind: memoryKindSchema,
-	title: string().min(1).max(120),
-	content: string().min(1).max(4e3),
-	scope: memoryScopeSchema.optional(),
-	tags: array(string().min(1)).max(20).optional(),
-	confidence: number().min(0).max(1).optional()
-})).max(100) });
+const responseSchema = object({
+	memories: array(object({
+		kind: memoryKindSchema,
+		title: string().min(1).max(120),
+		content: string().min(1).max(4e3),
+		scope: memoryScopeSchema.optional(),
+		tags: array(string().min(1)).max(20).optional(),
+		confidence: number().min(0).max(1).optional()
+	})).max(100),
+	/** Titles the batch disproved. Absent from older reflectors, so it stays optional. */
+	evict: array(string().min(1)).max(100).optional()
+});
+/** Memories evo distilled itself — the only ones it may deduplicate against or evict.
+`evo-memory` is the name it wrote under before the package was renamed; stores
+predating the rename still hold those rows, and they are just as much its own. */
+const OWN_RUNTIMES = /* @__PURE__ */ new Set(["evo", "evo-memory"]);
+const isOwn = (item) => OWN_RUNTIMES.has(item.source?.runtime ?? "");
 var EvoService = class {
 	store;
 	model;
@@ -4199,25 +4228,55 @@ var EvoService = class {
 			id
 		});
 	}
+	/** One turn is a batch of one; the distilling rules are the same either way. */
 	async reflect(turn, signal) {
-		const model = this.requireModel();
-		const parsed = responseSchema.parse(parseModelJson(await model.complete({
-			purpose: "reflect",
-			prompt: reflectionPrompt(turn),
-			...signal ? { signal } : {}
-		})));
-		const existing = await this.store.list({
-			scopes: [turn.scope],
-			limit: 1e3
-		});
+		return this.reflectBatch([turn], signal);
+	}
+	/**
+	* Distil a batch of turns in a single model call.
+	*
+	* The reflector is told what this scope already stores and how many memories
+	* it may return, because neither is knowable from the turns alone: without
+	* the stored titles it renames yesterday's fact into a new row, and without a
+	* cap it quotes a long answer back as eight durable memories.
+	*
+	* Only memories evo itself distilled take part. Imported workspace files are
+	* a projection of what is on disk — evo neither deduplicates against them nor
+	* lets a model evict them, or one reflection could delete the user's rules.
+	*/
+	async reflectBatch(turns, signal) {
 		const delta = {
 			created: [],
 			updated: [],
 			deleted: []
 		};
-		for (const candidate of parsed.memories) {
-			const scope = candidate.scope ?? turn.scope;
-			const old = existing.find((item) => scopeKey(item.scope) === scopeKey(scope) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase());
+		const first = turns[0];
+		if (!first) return delta;
+		const model = this.requireModel();
+		const scope = first.scope;
+		const existing = await this.store.list({
+			scopes: [scope],
+			limit: 1e3
+		});
+		const own = existing.filter(isOwn);
+		const prompt = reflectionPrompt(turns, {
+			cap: reflectionCap(turns.length),
+			existing: own.map((item) => item.title)
+		});
+		const parsed = responseSchema.parse(parseModelJson(await model.complete({
+			purpose: "reflect",
+			prompt,
+			...signal ? { signal } : {}
+		})));
+		const last = turns[turns.length - 1];
+		const source = {
+			runtime: "evo",
+			sessionId: last.sessionId,
+			turn: last.turn
+		};
+		for (const candidate of parsed.memories.slice(0, reflectionCap(turns.length))) {
+			const at = candidate.scope ?? scope;
+			const old = existing.find((item) => scopeKey(item.scope) === scopeKey(at) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase());
 			const now = this.now();
 			if (old) {
 				const item = {
@@ -4226,11 +4285,7 @@ var EvoService = class {
 					content: candidate.content,
 					tags: candidate.tags ?? old.tags,
 					updatedAt: now,
-					source: {
-						runtime: "evo",
-						sessionId: turn.sessionId,
-						turn: turn.turn
-					},
+					source,
 					...candidate.confidence === void 0 ? {} : { confidence: candidate.confidence }
 				};
 				await this.store.put(item);
@@ -4244,22 +4299,24 @@ var EvoService = class {
 					kind: candidate.kind,
 					title: candidate.title,
 					content: candidate.content,
-					scope,
+					scope: at,
 					...candidate.tags === void 0 ? {} : { tags: candidate.tags },
 					...candidate.confidence === void 0 ? {} : { confidence: candidate.confidence }
 				});
-				item.source = {
-					runtime: "evo",
-					sessionId: turn.sessionId,
-					turn: turn.turn
-				};
+				item.source = source;
 				await this.store.put(item);
 				delta.created.push(item);
 			}
 		}
+		for (const title of parsed.evict ?? []) {
+			const doomed = own.find((item) => item.title.toLocaleLowerCase() === title.trim().toLocaleLowerCase());
+			if (!doomed || delta.updated.some((item) => item.id === doomed.id) || delta.created.some((item) => item.id === doomed.id)) continue;
+			await this.forget(doomed.id);
+			delta.deleted.push(doomed.id);
+		}
 		await this.events.emit({
 			type: "memory.reflected",
-			turn,
+			turn: last,
 			delta
 		});
 		return delta;
@@ -4979,11 +5036,11 @@ function hookHost(env = process.env, transcript) {
 }
 //#endregion
 //#region src/hook/notice.ts
-const FILE = "hook-notice.json";
+const FILE$1 = "hook-notice.json";
 function writeNotice(dataDir, delta) {
 	if (!delta.created.length && !delta.updated.length) return;
 	try {
-		writeFileSync(join(dataDir, FILE), JSON.stringify({
+		writeFileSync(join(dataDir, FILE$1), JSON.stringify({
 			created: delta.created.length,
 			updated: delta.updated.length,
 			at: Date.now()
@@ -4992,7 +5049,7 @@ function writeNotice(dataDir, delta) {
 }
 /** Reads and consumes the breadcrumb. */
 function takeNotice(dataDir) {
-	const path = join(dataDir, FILE);
+	const path = join(dataDir, FILE$1);
 	try {
 		const notice = JSON.parse(readFileSync(path, "utf8"));
 		rmSync(path, { force: true });
@@ -5035,6 +5092,97 @@ function hookScopes(cwd) {
 	const scopes = [{ type: "global" }];
 	if (cwd?.trim()) scopes.push(projectScope(cwd));
 	return scopes;
+}
+//#endregion
+//#region src/hook/queue.ts
+const FILE = "hook-queue.json";
+function cut(text, limit) {
+	const value = text.trim();
+	return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+function read(dataDir) {
+	try {
+		const parsed = JSON.parse(readFileSync(join(dataDir, FILE), "utf8"));
+		return parsed && typeof parsed === "object" ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+function write(dataDir, queue) {
+	try {
+		mkdirSync(dataDir, { recursive: true });
+		const path = join(dataDir, FILE);
+		if (!Object.keys(queue).length) {
+			rmSync(path, { force: true });
+			return;
+		}
+		const temporary = `${path}.${process.pid}.tmp`;
+		writeFileSync(temporary, JSON.stringify(queue));
+		renameSync(temporary, path);
+	} catch {}
+}
+function isDue(batch, limits, now) {
+	return batch.turns.length >= limits.turns || batch.chars >= limits.chars || now - batch.updatedAt >= limits.idleMs;
+}
+/**
+* Add one finished turn. Truncation happens here, on the way in: the reflector
+* is looking for what repeats, and full transcripts bury that under detail —
+* the same reason the batch beats the single turn.
+*/
+function enqueue(dataDir, turn, limits, host, now = Date.now()) {
+	const queue = read(dataDir);
+	const key = scopeKey(turn.scope);
+	const batch = queue[key] ?? {
+		scope: turn.scope,
+		sessionId: turn.sessionId,
+		host,
+		turns: [],
+		chars: 0,
+		updatedAt: now
+	};
+	batch.sessionId = turn.sessionId;
+	batch.scope = turn.scope;
+	batch.host = host;
+	batch.turns.push({
+		user: cut(turn.user, limits.userChars),
+		assistant: cut(turn.assistant, limits.assistantChars),
+		tools: (turn.tools ?? []).slice(0, limits.tools),
+		turn: turn.turn
+	});
+	batch.chars += turn.user.length + turn.assistant.length;
+	batch.updatedAt = now;
+	queue[key] = batch;
+	write(dataDir, queue);
+	return batch;
+}
+/**
+* Remove and return the batches ready to distil — all of them, or only the one
+* scope named. Taken before the model runs, so turns arriving during those
+* seconds queue up behind it instead of being distilled twice or dropped.
+*/
+function takeDue(dataDir, limits, now = Date.now(), only) {
+	const queue = read(dataDir);
+	const wanted = only ? scopeKey(only) : void 0;
+	const due = [];
+	for (const [key, batch] of Object.entries(queue)) {
+		if (wanted && key !== wanted) continue;
+		if (!batch?.turns?.length || !isDue(batch, limits, now)) continue;
+		due.push(batch);
+		delete queue[key];
+	}
+	if (due.length) write(dataDir, queue);
+	return due;
+}
+/** The queued turns as core `Turn`s, ready for one batched reflection. */
+function batchTurns(batch) {
+	return batch.turns.map((turn) => ({
+		sessionId: batch.sessionId,
+		turn: turn.turn,
+		scope: batch.scope,
+		user: turn.user,
+		assistant: turn.assistant,
+		tools: turn.tools
+	}));
 }
 //#endregion
 //#region src/hook/transcript.ts
@@ -5102,7 +5250,15 @@ function hookConfig(env = process.env) {
 		importWorkspace: env.EVO_HOOK_IMPORT !== "0",
 		model: env.EVO_HOOK_MODEL?.trim() ?? "",
 		notify: env.EVO_HOOK_NOTIFY !== "0",
-		debug: env.EVO_HOOK_DEBUG === "1"
+		debug: env.EVO_HOOK_DEBUG === "1",
+		queue: {
+			turns: positive(env.EVO_HOOK_BATCH_TURNS) ?? 10,
+			chars: positive(env.EVO_HOOK_BATCH_CHARS) ?? 12e3,
+			idleMs: positive(env.EVO_HOOK_BATCH_IDLE_MS) ?? 3e5,
+			userChars: positive(env.EVO_HOOK_TURN_USER_CHARS) ?? 400,
+			assistantChars: positive(env.EVO_HOOK_TURN_ASSISTANT_CHARS) ?? 600,
+			tools: positive(env.EVO_HOOK_TURN_TOOLS) ?? 20
+		}
 	};
 }
 /**
@@ -5119,23 +5275,28 @@ async function recallContext(event, service, config) {
 	});
 }
 /**
-* Rebuilds the finished turn from the transcript and distils it into memory.
-* The transcript text is passed in when the caller has already read it — the
-* host is decided from the same bytes, and a rollout can be large.
+* Rebuilds the finished turn from either host's transcript, or nothing usable to
+* reflect on. The transcript text is passed in when the caller has already read
+* it — the host is decided from the same bytes, and a rollout can be large.
 */
-async function reflectTurn(event, service, transcript) {
+function turnFrom(event, transcript) {
 	const text = transcript ?? readTranscript(event);
 	if (text === null) return null;
 	const draft = draftTurn(text, event.last_assistant_message);
 	if (!draft || !draft.user || !draft.assistant) return null;
-	return service.reflect({
+	return {
 		sessionId: event.session_id ?? "agent-hook",
 		turn: draft.turn,
 		scope: event.cwd ? projectScope(event.cwd) : { type: "global" },
 		user: draft.user,
 		assistant: draft.assistant,
 		tools: draft.tools
-	});
+	};
+}
+/** Distils the event's own turn on its own. Batching is what the hook does instead. */
+async function reflectTurn(event, service, transcript) {
+	const turn = turnFrom(event, transcript);
+	return turn ? service.reflect(turn) : null;
 }
 /**
 * Both hosts render `systemMessage` as their own element in the transcript, so
@@ -5191,16 +5352,17 @@ async function main() {
 	if (process.env.EVO_HOOK_DISABLE === "1") return;
 	const config = hookConfig();
 	const [mode, payloadPath] = process.argv.slice(2);
-	if (mode === "reflect" && payloadPath) return runDetachedReflect(payloadPath, config);
+	if (mode === "flush" && payloadPath) return runDetachedFlush(payloadPath, config);
 	const raw = readFileSync(0, "utf8");
 	if (!raw.trim()) return;
 	const event = JSON.parse(raw);
 	const { service, store } = openService();
 	try {
 		if (event.hook_event_name === "Stop") {
-			if (config.reflect) detachReflect(event);
+			if (config.reflect) queueTurn(event, config);
 			return;
 		}
+		if (config.reflect) flushDue(event, config, event.hook_event_name === "SessionStart" ? void 0 : event.cwd ? projectScope(event.cwd) : void 0);
 		if (event.hook_event_name === "SessionStart" && config.importWorkspace && event.cwd) {
 			const imported = await new WorkspaceImporter(store).import(canonicalPath(event.cwd));
 			if (config.debug) log(`import created=${imported.created} updated=${imported.updated} skipped=${imported.skipped}`);
@@ -5216,35 +5378,69 @@ async function main() {
 function dataDir() {
 	return resolveDataPaths().dataDir ?? tmpdir();
 }
-/** Hands the turn to a detached child: reflection takes seconds, the hook must not. */
-function detachReflect(event) {
+/** Queues the finished turn, and distils only once the batch is worth a model call. */
+function queueTurn(event, config) {
+	const transcript = readTranscript(event);
+	const turn = transcript === null ? null : turnFrom(event, transcript);
+	if (!turn) {
+		if (config.debug) log("queue skipped: no usable turn in the transcript");
+		return;
+	}
+	const batch = enqueue(dataDir(), turn, config.queue, hookHost(process.env, transcript ?? void 0));
+	if (config.debug) log(`queued turn ${batch.turns.length}/${config.queue.turns}, ${batch.chars}/${config.queue.chars} chars`);
+	if (isDue(batch, config.queue, Date.now())) flushDue(event, config, turn.scope);
+}
+/** Takes whatever is ready and hands it to a detached child. */
+function flushDue(event, config, scope) {
+	const due = takeDue(dataDir(), config.queue, Date.now(), scope);
+	if (!due.length) return;
+	if (config.debug) log(`flushing ${due.length} batch(es), ${due.reduce((sum, batch) => sum + batch.turns.length, 0)} turns`);
+	detachFlush(due, event);
+}
+/** Reflection takes seconds; the hook must not. The batches are already taken,
+so nothing is distilled twice even if the child is slow or dies. */
+function detachFlush(batches, event) {
 	const dir = mkdtempSync(join(tmpdir(), "evo-hook-"));
-	const payloadPath = join(dir, "event.json");
-	writeFileSync(payloadPath, JSON.stringify(event));
+	const payloadPath = join(dir, "flush.json");
+	writeFileSync(payloadPath, JSON.stringify({
+		batches,
+		sessionId: event.session_id
+	}));
 	spawn(process.execPath, [
 		selfPath,
-		"reflect",
+		"flush",
 		payloadPath
 	], {
 		detached: true,
 		stdio: "ignore"
 	}).unref();
 }
-async function runDetachedReflect(payloadPath, config) {
-	const event = JSON.parse(readFileSync(payloadPath, "utf8"));
+async function runDetachedFlush(payloadPath, config) {
+	const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
 	rmSync(dirname(payloadPath), {
 		recursive: true,
 		force: true
 	});
-	const transcript = readTranscript(event);
-	const host = hookHost(process.env, transcript ?? void 0);
 	const { service, store } = openService();
-	service.setModelRunner(modelRunner(host, config));
+	const total = {
+		created: [],
+		updated: [],
+		deleted: []
+	};
 	try {
-		const delta = transcript === null ? null : await reflectTurn(event, service, transcript);
-		if (delta && config.notify) writeNotice(dataDir(), delta);
-		if (!config.debug) return;
-		log(delta ? `reflect ok host=${host} created=${delta.created.length} updated=${delta.updated.length}` : `reflect skipped: no usable turn in the ${host} transcript`);
+		for (const batch of payload.batches ?? []) {
+			service.setModelRunner(modelRunner(batch.host, config));
+			try {
+				const delta = await service.reflectBatch(batchTurns(batch));
+				total.created.push(...delta.created);
+				total.updated.push(...delta.updated);
+				total.deleted.push(...delta.deleted);
+				if (config.debug) log(`reflect ok host=${batch.host} turns=${batch.turns.length} created=${delta.created.length} updated=${delta.updated.length} evicted=${delta.deleted.length}`);
+			} catch (error) {
+				log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${String(error instanceof Error ? error.message : error)}`);
+			}
+		}
+		if (config.notify) writeNotice(dataDir(), total);
 	} finally {
 		store.close?.();
 	}
@@ -5270,4 +5466,4 @@ if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(selfPath
 	if (hookConfig().notify) process.stdout.write(JSON.stringify({ systemMessage: `evo · memory unavailable: ${reason}` }));
 }).finally(() => process.exit(0));
 //#endregion
-export { draftTurn, hookConfig, hookOutput, modelRunner, noticeMessage, openService, readTranscript, recallContext, reflectTurn };
+export { draftTurn, hookConfig, hookOutput, modelRunner, noticeMessage, openService, readTranscript, recallContext, reflectTurn, turnFrom };

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDataPaths } from '../config/paths.js'
-import type { MemoryDelta } from '../core/types.js'
+import type { MemoryDelta, MemoryScope, Turn } from '../core/types.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter } from '../workspace/importer.js'
@@ -14,6 +14,7 @@ import { extractLatestCodexTurn, isCodexTranscript, parseCodexTranscript } from 
 import { hookHost, type HookHost } from './host.js'
 import { formatNotice, takeNotice, writeNotice } from './notice.js'
 import { canonicalPath, hookScopes, projectScope } from './scope.js'
+import { batchTurns, enqueue, isDue, takeDue, type QueueLimits, type QueuedBatch } from './queue.js'
 import { extractLatestTurn, parseTranscript, type TurnDraft } from './transcript.js'
 
 /**
@@ -37,6 +38,8 @@ export type HookConfig = {
   model: string
   notify: boolean
   debug: boolean
+  /** When a queued batch is distilled, and how much of each turn it keeps. */
+  queue: QueueLimits
 }
 
 export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
@@ -49,6 +52,15 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
     model: env.EVO_HOOK_MODEL?.trim() ?? '',
     notify: env.EVO_HOOK_NOTIFY !== '0',
     debug: env.EVO_HOOK_DEBUG === '1',
+    /* EVO_HOOK_BATCH_TURNS=1 restores the old turn-by-turn behaviour. */
+    queue: {
+      turns: positive(env.EVO_HOOK_BATCH_TURNS) ?? 10,
+      chars: positive(env.EVO_HOOK_BATCH_CHARS) ?? 12_000,
+      idleMs: positive(env.EVO_HOOK_BATCH_IDLE_MS) ?? 300_000,
+      userChars: positive(env.EVO_HOOK_TURN_USER_CHARS) ?? 400,
+      assistantChars: positive(env.EVO_HOOK_TURN_ASSISTANT_CHARS) ?? 600,
+      tools: positive(env.EVO_HOOK_TURN_TOOLS) ?? 20,
+    },
   }
 }
 
@@ -63,23 +75,29 @@ export async function recallContext(event: HookEvent, service: EvoService, confi
 }
 
 /**
- * Rebuilds the finished turn from the transcript and distils it into memory.
- * The transcript text is passed in when the caller has already read it — the
- * host is decided from the same bytes, and a rollout can be large.
+ * Rebuilds the finished turn from either host's transcript, or nothing usable to
+ * reflect on. The transcript text is passed in when the caller has already read
+ * it — the host is decided from the same bytes, and a rollout can be large.
  */
-export async function reflectTurn(event: HookEvent, service: EvoService, transcript?: string): Promise<MemoryDelta | null> {
+export function turnFrom(event: HookEvent, transcript?: string): Turn | null {
   const text = transcript ?? readTranscript(event)
   if (text === null) return null
   const draft = draftTurn(text, event.last_assistant_message)
   if (!draft || !draft.user || !draft.assistant) return null
-  return service.reflect({
+  return {
     sessionId: event.session_id ?? 'agent-hook',
     turn: draft.turn,
     scope: event.cwd ? projectScope(event.cwd) : { type: 'global' },
     user: draft.user,
     assistant: draft.assistant,
     tools: draft.tools,
-  })
+  }
+}
+
+/** Distils the event's own turn on its own. Batching is what the hook does instead. */
+export async function reflectTurn(event: HookEvent, service: EvoService, transcript?: string): Promise<MemoryDelta | null> {
+  const turn = turnFrom(event, transcript)
+  return turn ? service.reflect(turn) : null
 }
 
 /**
@@ -141,7 +159,7 @@ async function main(): Promise<void> {
   const config = hookConfig()
   const [mode, payloadPath] = process.argv.slice(2)
 
-  if (mode === 'reflect' && payloadPath) return runDetachedReflect(payloadPath, config)
+  if (mode === 'flush' && payloadPath) return runDetachedFlush(payloadPath, config)
 
   const raw = readFileSync(0, 'utf8')
   if (!raw.trim()) return
@@ -149,8 +167,15 @@ async function main(): Promise<void> {
   const { service, store } = openService()
   try {
     if (event.hook_event_name === 'Stop') {
-      if (config.reflect) detachReflect(event)
+      if (config.reflect) queueTurn(event, config)
       return
+    }
+    /* No process lives between turns, so the idle deadline is settled here:
+       a prompt settles this project, a session start settles every project
+       left hanging when work stopped. */
+    if (config.reflect) {
+      const scope = event.hook_event_name === 'SessionStart' ? undefined : event.cwd ? projectScope(event.cwd) : undefined
+      flushDue(event, config, scope)
     }
     if (event.hook_event_name === 'SessionStart' && config.importWorkspace && event.cwd) {
       const imported = await new WorkspaceImporter(store).import(canonicalPath(event.cwd))
@@ -170,28 +195,57 @@ function dataDir(): string {
   return resolveDataPaths().dataDir ?? tmpdir()
 }
 
-/** Hands the turn to a detached child: reflection takes seconds, the hook must not. */
-function detachReflect(event: HookEvent): void {
-  const dir = mkdtempSync(join(tmpdir(), 'evo-hook-'))
-  const payloadPath = join(dir, 'event.json')
-  writeFileSync(payloadPath, JSON.stringify(event))
-  spawn(process.execPath, [selfPath, 'reflect', payloadPath], { detached: true, stdio: 'ignore' }).unref()
+/** Queues the finished turn, and distils only once the batch is worth a model call. */
+function queueTurn(event: HookEvent, config: HookConfig): void {
+  /* Read once: the turn is rebuilt from these bytes and the host is decided by
+     them too, and a rollout can be large. */
+  const transcript = readTranscript(event)
+  const turn = transcript === null ? null : turnFrom(event, transcript)
+  if (!turn) { if (config.debug) log('queue skipped: no usable turn in the transcript'); return }
+  const batch = enqueue(dataDir(), turn, config.queue, hookHost(process.env, transcript ?? undefined))
+  if (config.debug) log(`queued turn ${batch.turns.length}/${config.queue.turns}, ${batch.chars}/${config.queue.chars} chars`)
+  if (isDue(batch, config.queue, Date.now())) flushDue(event, config, turn.scope)
 }
 
-async function runDetachedReflect(payloadPath: string, config: HookConfig): Promise<void> {
-  const event = JSON.parse(readFileSync(payloadPath, 'utf8')) as HookEvent
+/** Takes whatever is ready and hands it to a detached child. */
+function flushDue(event: HookEvent, config: HookConfig, scope?: MemoryScope): void {
+  const due = takeDue(dataDir(), config.queue, Date.now(), scope)
+  if (!due.length) return
+  if (config.debug) log(`flushing ${due.length} batch(es), ${due.reduce((sum, batch) => sum + batch.turns.length, 0)} turns`)
+  detachFlush(due, event)
+}
+
+/** Reflection takes seconds; the hook must not. The batches are already taken,
+    so nothing is distilled twice even if the child is slow or dies. */
+function detachFlush(batches: QueuedBatch[], event: HookEvent): void {
+  const dir = mkdtempSync(join(tmpdir(), 'evo-hook-'))
+  const payloadPath = join(dir, 'flush.json')
+  writeFileSync(payloadPath, JSON.stringify({ batches, sessionId: event.session_id }))
+  spawn(process.execPath, [selfPath, 'flush', payloadPath], { detached: true, stdio: 'ignore' }).unref()
+}
+
+async function runDetachedFlush(payloadPath: string, config: HookConfig): Promise<void> {
+  const payload = JSON.parse(readFileSync(payloadPath, 'utf8')) as { batches: QueuedBatch[] }
   rmSync(dirname(payloadPath), { recursive: true, force: true })
-  const transcript = readTranscript(event)
-  const host = hookHost(process.env, transcript ?? undefined)
   const { service, store } = openService()
-  service.setModelRunner(modelRunner(host, config))
+  const total: MemoryDelta = { created: [], updated: [], deleted: [] }
   try {
-    const delta = transcript === null ? null : await reflectTurn(event, service, transcript)
-    if (delta && config.notify) writeNotice(dataDir(), delta)
-    if (!config.debug) return
-    log(delta
-      ? `reflect ok host=${host} created=${delta.created.length} updated=${delta.updated.length}`
-      : `reflect skipped: no usable turn in the ${host} transcript`)
+    for (const batch of payload.batches ?? []) {
+      /* Each batch reflects through the host that produced it: a batch outlives
+         the transcript it came from, and may not be distilled until a later
+         session — possibly one running under the other host. */
+      service.setModelRunner(modelRunner(batch.host, config))
+      /* One batch failing must not strand the rest: they are already out of the
+         queue, so a thrown error here would lose those turns for good. */
+      try {
+        const delta = await service.reflectBatch(batchTurns(batch))
+        total.created.push(...delta.created); total.updated.push(...delta.updated); total.deleted.push(...delta.deleted)
+        if (config.debug) log(`reflect ok host=${batch.host} turns=${batch.turns.length} created=${delta.created.length} updated=${delta.updated.length} evicted=${delta.deleted.length}`)
+      } catch (error) {
+        log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${String(error instanceof Error ? error.message : error)}`)
+      }
+    }
+    if (config.notify) writeNotice(dataDir(), total)
   } finally {
     store.close?.()
   }

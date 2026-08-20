@@ -216,16 +216,36 @@ globally and per-project makes evo run twice per turn — pick one.
 
 | Event | What evo does |
 | --- | --- |
-| `SessionStart` | Imports the workspace's agent files, then prints recalled memory into the session |
-| `UserPromptSubmit` | Prints global + project memory, which Claude Code injects as context |
-| `Stop` | Hands the finished turn to a detached child process that distils it into memory |
+| `SessionStart` | Settles any batch left waiting, imports the workspace's agent files, then prints recalled memory into the session |
+| `UserPromptSubmit` | Settles this project's batch if it has gone idle, then prints global + project memory, which Claude Code injects as context |
+| `Stop` | Queues the finished turn, and distils the batch once it is worth a model call |
 
 Reflection runs through the local `claude -p` CLI, reusing the credentials Claude
 Code already has (under Codex it is `codex exec` instead — see
-[Codex plugin](#codex-plugin)). It takes several seconds, so the `Stop` hook returns
+[Codex plugin](#codex-plugin)). It takes several seconds, so the hook returns
 immediately and the work continues in a detached process — a session is never
 blocked by evo. The child runs with `EVO_HOOK_DISABLE=1` so its own hooks exit at
 once; without that guard reflection would recurse.
+
+Turns are distilled in batches, not one by one. A single turn is thin material:
+what earns a place in memory — the pit stepped into three times, the convention
+confirmed again — only becomes visible across turns, and reflecting per turn pays
+a model call to miss it. A batch is distilled once it holds `EVO_HOOK_BATCH_TURNS`
+turns, once those turns add up to `EVO_HOOK_BATCH_CHARS` characters, or once it
+has sat idle for `EVO_HOOK_BATCH_IDLE_MS`.
+
+That last condition is checked, never fired: a hook is a fresh short-lived process,
+so no timer survives between turns. Later hook events settle the deadline instead —
+a prompt settles the project it belongs to, and a session start settles every
+project left hanging when work stopped. Set `EVO_HOOK_BATCH_TURNS=1` to distil
+turn by turn as before.
+
+The reflector is told which memories the scope already holds and how many it may
+return. Both bounds matter: blind to the store it renames yesterday's fact into a
+new row, and uncapped it quotes one long answer back as eight durable memories. It
+may also name memories the batch disproved, which are then dropped — but only ones
+evo distilled itself. Imported workspace files are a projection of what is on disk;
+evo never evicts them, or one reflection could delete your own rules.
 
 ### As a plugin
 
@@ -271,6 +291,12 @@ goes to `<dataDir>/hook.log`.
 | `EVO_HOOK_DEBUG` | unset | Set `1` to log every recall, import and reflection |
 | `EVO_HOOK_DISABLE` | unset | Set `1` to make the hook a no-op (used for the recursion guard) |
 | `EVO_HOOK_HOST` | auto | `claude` or `codex`, when the host has to be forced |
+| `EVO_HOOK_BATCH_TURNS` | `10` | Turns to gather before distilling; `1` restores turn-by-turn reflection |
+| `EVO_HOOK_BATCH_CHARS` | `12000` | Characters of conversation that also trigger a batch |
+| `EVO_HOOK_BATCH_IDLE_MS` | `300000` | Idle time after which the next hook event settles a waiting batch |
+| `EVO_HOOK_TURN_USER_CHARS` | `400` | Kept from each user message |
+| `EVO_HOOK_TURN_ASSISTANT_CHARS` | `600` | Kept from each assistant message |
+| `EVO_HOOK_TURN_TOOLS` | `20` | Tool names kept per turn |
 
 Project memory is keyed by the canonical (symlink-resolved) working directory.
 When a project moves, or was first recorded through a different path, re-point

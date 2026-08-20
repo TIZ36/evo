@@ -37,6 +37,72 @@ describe('EvoService', () => {
     expect((await store.list())[0]?.content).toBe('Use Chinese')
   })
 
+  it('distils a whole batch in one call, and tells the reflector what it already stores', async () => {
+    const store = new MemoryStoreStub()
+    let seen = ''
+    let calls = 0
+    const service = new EvoService({ store, model: { complete: async request => { calls++; seen = request.prompt; return '{"memories":[]}' } }, now: () => 20, id: () => 'm1' })
+    store.rows.set('own', { id: 'own', scope, kind: 'fact', title: 'Distilled fact', content: 'v', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo' } })
+    store.rows.set('imported', { id: 'imported', scope, kind: 'fact', title: 'CLAUDE.md', content: 'rules', tags: ['workspace-import'], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'workspace-import', path: '/repo/CLAUDE.md' } })
+
+    await service.reflectBatch([
+      { sessionId: 's', turn: 1, scope, user: 'first', assistant: 'a1' },
+      { sessionId: 's', turn: 2, scope, user: 'second', assistant: 'a2' },
+      { sessionId: 's', turn: 3, scope, user: 'third', assistant: 'a3' },
+    ])
+
+    expect(calls).toBe(1)
+    expect(seen).toContain('turn 3')
+    expect(seen).toContain('first')
+    expect(seen).toContain('third')
+    /* Its own memories are offered for reuse; an imported file is not evo's to rewrite. */
+    expect(seen).toContain('Distilled fact')
+    expect(seen).not.toContain('CLAUDE.md')
+  })
+
+  it('caps what one batch may produce, however much the model returns', async () => {
+    const store = new MemoryStoreStub()
+    let id = 0
+    const service = new EvoService({ store, now: () => 20, id: () => `m${++id}`, model: runner({ memories: [1, 2, 3, 4, 5].map(n => ({ kind: 'fact', title: `T${n}`, content: `c${n}` })) }) })
+    const turns = [1, 2, 3].map(n => ({ sessionId: 's', turn: n, scope, user: `u${n}`, assistant: `a${n}` }))
+    const delta = await service.reflectBatch(turns)
+    /* cap = 1 + floor(3/3) = 2 */
+    expect(delta.created).toHaveLength(2)
+    expect(await store.list()).toHaveLength(2)
+  })
+
+  it('evicts only what it distilled itself, never an imported file', async () => {
+    const store = new MemoryStoreStub()
+    const service = new EvoService({ store, now: () => 20, id: () => 'm1', model: runner({ memories: [], evict: ['Stale rule', 'CLAUDE.md'] }) })
+    store.rows.set('own', { id: 'own', scope, kind: 'fact', title: 'Stale rule', content: 'v', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo' } })
+    store.rows.set('imported', { id: 'imported', scope, kind: 'fact', title: 'CLAUDE.md', content: 'rules', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'workspace-import' } })
+
+    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    expect(delta.deleted).toEqual(['own'])
+    expect((await store.list()).map(item => item.id)).toEqual(['imported'])
+  })
+
+  it('still owns memories written under the pre-rename runtime name', async () => {
+    const store = new MemoryStoreStub()
+    let seen = ''
+    const service = new EvoService({ store, now: () => 20, id: () => 'm1', model: { complete: async request => { seen = request.prompt; return '{"memories":[],"evict":["Legacy rule"]}' } } })
+    store.rows.set('legacy', { id: 'legacy', scope, kind: 'fact', title: 'Legacy rule', content: 'v', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo-memory' } })
+
+    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    expect(seen).toContain('Legacy rule')
+    expect(delta.deleted).toEqual(['legacy'])
+  })
+
+  it('keeps a memory the same batch rewrote, treating it as a correction', async () => {
+    const store = new MemoryStoreStub()
+    const service = new EvoService({ store, now: () => 20, id: () => 'm1', model: runner({ memories: [{ kind: 'fact', title: 'Rule', content: 'new value' }], evict: ['Rule'] }) })
+    store.rows.set('own', { id: 'own', scope, kind: 'fact', title: 'Rule', content: 'old value', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo' } })
+
+    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    expect(delta.deleted).toEqual([])
+    expect((await store.list())[0]?.content).toBe('new value')
+  })
+
   it('refuses an empty consolidation result and preserves stored memories', async () => {
     const store = new MemoryStoreStub()
     const service = new EvoService({ store, model: runner({ memories: [] }), now: () => 20, id: () => 'm1' })
