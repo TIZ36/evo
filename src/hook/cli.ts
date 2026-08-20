@@ -95,9 +95,11 @@ async function main(): Promise<void> {
       return
     }
     if (event.hook_event_name === 'SessionStart' && config.importWorkspace && event.cwd) {
-      await new WorkspaceImporter(store).import(canonicalPath(event.cwd))
+      const imported = await new WorkspaceImporter(store).import(canonicalPath(event.cwd))
+      if (config.debug) log(`import created=${imported.created} updated=${imported.updated} skipped=${imported.skipped}`)
     }
     const text = await recallContext(event, service, config)
+    if (config.debug) log(`${event.hook_event_name ?? 'event'} recall ${countItems(text)} memories, ${text.length} chars`)
     if (text.trim()) process.stdout.write(text)
   } finally {
     store.close?.()
@@ -132,6 +134,11 @@ async function runDetachedReflect(payloadPath: string, config: HookConfig): Prom
 function log(message: string): void {
   const path = process.env.EVO_HOOK_LOG?.trim() || join(resolveDataPaths().dataDir ?? tmpdir(), 'hook.log')
   try { appendFileSync(path, `${new Date().toISOString()} ${message}\n`) } catch { /* logging must never throw */ }
+}
+
+/** Rendered context is one memory per line under a single heading. */
+function countItems(text: string): number {
+  return text.split('\n').filter(line => line.startsWith('- [')).length
 }
 
 function positive(value: string | undefined): number | undefined {

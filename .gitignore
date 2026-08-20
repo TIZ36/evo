@@ -48,3 +48,6 @@ id_ed25519.*
 npm-debug.log*
 pnpm-debug.log*
 yarn-error.log*
+
+# local agent config (machine-specific)
+.claude/settings.local.json
