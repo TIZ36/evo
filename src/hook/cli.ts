@@ -9,12 +9,17 @@ import type { MemoryDelta } from '../core/types.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter } from '../workspace/importer.js'
-import { ClaudeCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
+import { ClaudeCliModelRunner, CodexCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
+import { extractLatestCodexTurn, isCodexTranscript, parseCodexTranscript } from './codex-transcript.js'
+import { hookHost, type HookHost } from './host.js'
 import { formatNotice, takeNotice, writeNotice } from './notice.js'
 import { canonicalPath, hookScopes, projectScope } from './scope.js'
-import { extractLatestTurn, parseTranscript } from './transcript.js'
+import { extractLatestTurn, parseTranscript, type TurnDraft } from './transcript.js'
 
-/** The subset of the Claude Code hook payload evo reads. */
+/**
+ * The subset of the hook payload evo reads. Claude Code and Codex send the same
+ * envelope for the events evo takes part in, so one shape serves both.
+ */
 export type HookEvent = {
   hook_event_name?: string
   session_id?: string
@@ -40,28 +45,35 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
     maxChars: positive(env.EVO_HOOK_MAX_CHARS) ?? 6000,
     reflect: env.EVO_HOOK_REFLECT !== '0',
     importWorkspace: env.EVO_HOOK_IMPORT !== '0',
-    model: env.EVO_HOOK_MODEL?.trim() || DEFAULT_HOOK_MODEL,
+    // Empty means "each host's own default"; the runners resolve it.
+    model: env.EVO_HOOK_MODEL?.trim() ?? '',
     notify: env.EVO_HOOK_NOTIFY !== '0',
     debug: env.EVO_HOOK_DEBUG === '1',
   }
 }
 
 /**
- * Text injected into the model's context. Claude Code shows a `SessionStart` /
- * `UserPromptSubmit` hook's stdout to the model verbatim, so recall is simply
- * the rendered memory context — empty when there is nothing to say.
+ * Text injected into the model's context. Both hosts pass a `SessionStart` /
+ * `UserPromptSubmit` hook's `additionalContext` to the model verbatim, so
+ * recall is simply the rendered memory context — empty when there is nothing
+ * to say.
  */
 export async function recallContext(event: HookEvent, service: EvoService, config: HookConfig): Promise<string> {
   return service.context({ scopes: hookScopes(event.cwd), limit: config.recallLimit, maxChars: config.maxChars })
 }
 
-/** Rebuilds the finished turn from the transcript and distils it into memory. */
-export async function reflectTurn(event: HookEvent, service: EvoService): Promise<MemoryDelta | null> {
-  if (!event.transcript_path) return null
-  const draft = extractLatestTurn(parseTranscript(readFileSync(event.transcript_path, 'utf8')), event.last_assistant_message)
+/**
+ * Rebuilds the finished turn from the transcript and distils it into memory.
+ * The transcript text is passed in when the caller has already read it — the
+ * host is decided from the same bytes, and a rollout can be large.
+ */
+export async function reflectTurn(event: HookEvent, service: EvoService, transcript?: string): Promise<MemoryDelta | null> {
+  const text = transcript ?? readTranscript(event)
+  if (text === null) return null
+  const draft = draftTurn(text, event.last_assistant_message)
   if (!draft || !draft.user || !draft.assistant) return null
   return service.reflect({
-    sessionId: event.session_id ?? 'claude-code',
+    sessionId: event.session_id ?? 'agent-hook',
     turn: draft.turn,
     scope: event.cwd ? projectScope(event.cwd) : { type: 'global' },
     user: draft.user,
@@ -71,7 +83,7 @@ export async function reflectTurn(event: HookEvent, service: EvoService): Promis
 }
 
 /**
- * Claude Code renders `systemMessage` as its own element in the transcript, so
+ * Both hosts render `systemMessage` as their own element in the transcript, so
  * it is evo's only visible surface here. It stays silent on an ordinary recall
  * and speaks only when evo learned something, or when it is broken.
  */
@@ -93,6 +105,26 @@ export function noticeMessage(event: HookEvent, config: HookConfig, dir: string)
   return formatNotice(takeNotice(dir))
 }
 
+/** Reads the event's transcript, or null when there is none to read. */
+export function readTranscript(event: HookEvent): string | null {
+  if (!event.transcript_path) return null
+  try { return readFileSync(event.transcript_path, 'utf8') } catch { return null }
+}
+
+/** One turn out of either host's transcript format, told apart by its content. */
+export function draftTurn(transcript: string, fallbackAssistant?: string): TurnDraft | null {
+  return isCodexTranscript(transcript)
+    ? extractLatestCodexTurn(parseCodexTranscript(transcript), fallbackAssistant)
+    : extractLatestTurn(parseTranscript(transcript), fallbackAssistant)
+}
+
+/** Reflection is delegated to the host's own CLI, with the host's own credentials. */
+export function modelRunner(host: HookHost, config: HookConfig): ClaudeCliModelRunner | CodexCliModelRunner {
+  return host === 'codex'
+    ? new CodexCliModelRunner({ model: config.model })
+    : new ClaudeCliModelRunner({ model: config.model || DEFAULT_HOOK_MODEL })
+}
+
 export function openService(): { service: EvoService; store: SqliteMemoryStore } {
   const store = new SqliteMemoryStore(resolveDataPaths().databasePath)
   return { service: new EvoService({ store, events: store }), store }
@@ -102,8 +134,8 @@ export function openService(): { service: EvoService; store: SqliteMemoryStore }
 const selfPath = fileURLToPath(import.meta.url)
 
 async function main(): Promise<void> {
-  // Recursion guard: reflection spawns Claude Code, whose hooks would otherwise
-  // spawn reflection again, forever.
+  // Recursion guard: reflection spawns the host CLI again, whose hooks would
+  // otherwise spawn reflection again, forever.
   if (process.env.EVO_HOOK_DISABLE === '1') return
 
   const config = hookConfig()
@@ -149,15 +181,17 @@ function detachReflect(event: HookEvent): void {
 async function runDetachedReflect(payloadPath: string, config: HookConfig): Promise<void> {
   const event = JSON.parse(readFileSync(payloadPath, 'utf8')) as HookEvent
   rmSync(dirname(payloadPath), { recursive: true, force: true })
+  const transcript = readTranscript(event)
+  const host = hookHost(process.env, transcript ?? undefined)
   const { service, store } = openService()
-  service.setModelRunner(new ClaudeCliModelRunner({ model: config.model }))
+  service.setModelRunner(modelRunner(host, config))
   try {
-    const delta = await reflectTurn(event, service)
+    const delta = transcript === null ? null : await reflectTurn(event, service, transcript)
     if (delta && config.notify) writeNotice(dataDir(), delta)
     if (!config.debug) return
     log(delta
-      ? `reflect ok created=${delta.created.length} updated=${delta.updated.length}`
-      : 'reflect skipped: no usable turn in the transcript')
+      ? `reflect ok host=${host} created=${delta.created.length} updated=${delta.updated.length}`
+      : `reflect skipped: no usable turn in the ${host} transcript`)
   } finally {
     store.close?.()
   }

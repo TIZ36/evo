@@ -1,13 +1,13 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"", "timeout": 20 } ] }
+      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/hook.mjs\"", "timeout": 20 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"", "timeout": 20 } ] }
+      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/hook.mjs\"", "timeout": 20 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"", "timeout": 20 } ] }
+      { "hooks": [ { "type": "command", "command": "node --no-warnings \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/hook.mjs\"", "timeout": 20 } ] }
     ]
   }
 }

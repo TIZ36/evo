@@ -76,6 +76,26 @@ describe('reflectTurn', () => {
     store.close?.()
   })
 
+  it('reads a Codex rollout with the same entry point', async () => {
+    const { store, evo } = service()
+    const dir = mkdtempSync(join(tmpdir(), 'evo-turn-'))
+    const path = join(dir, 'rollout.jsonl')
+    writeFileSync(path, [
+      JSON.stringify({ type: 'session_meta', payload: { id: 's2' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'always run pnpm check before pushing' } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'added the gate' } }),
+    ].join('\n'))
+    let seen = ''
+    evo.setModelRunner({ complete: async request => { seen = request.prompt; return '{"memories":[{"kind":"constraint","title":"Pre-push gate","content":"Run pnpm check before pushing."}]}' } })
+
+    const delta = await reflectTurn({ session_id: 's2', cwd: dir, transcript_path: path }, evo)
+    expect(delta?.created).toHaveLength(1)
+    expect(seen).toContain('always run pnpm check before pushing')
+    expect(seen).toContain('apply_patch')
+    store.close?.()
+  })
+
   it('does nothing without a transcript or a usable turn', async () => {
     const { store, evo } = service()
     const dir = mkdtempSync(join(tmpdir(), 'evo-turn-'))

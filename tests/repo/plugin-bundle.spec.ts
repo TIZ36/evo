@@ -2,9 +2,9 @@ import { readFileSync, statSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 /**
- * Claude Code copies a plugin without building it and only restores npm or bun
- * lockfiles, so the committed bundle is the whole plugin. If it drifts from the
- * source, the plugin ships stale or broken.
+ * Both hosts copy a plugin without building it — Claude Code restores only npm
+ * or bun lockfiles, Codex restores nothing — so the committed bundle is the
+ * whole plugin. If it drifts from the source, the plugin ships stale or broken.
  */
 const BUNDLE = 'plugin/bin/hook.mjs'
 
@@ -27,14 +27,26 @@ describe('plugin bundle', () => {
     expect(imports.filter(name => !name.startsWith('node:'))).toEqual([])
   })
 
-  it('is declared by the plugin manifest and its hooks', () => {
-    const manifest = JSON.parse(readFileSync('plugin/.claude-plugin/plugin.json', 'utf8'))
-    expect(manifest.name).toBe('evo')
+  it('is declared by both hosts\u2019 manifests and by one shared hooks file', () => {
+    for (const path of ['plugin/.claude-plugin/plugin.json', 'plugin/.codex-plugin/plugin.json']) {
+      const manifest = JSON.parse(readFileSync(path, 'utf8'))
+      expect(manifest.name).toBe('evo')
+      expect(manifest.hooks).toBe('./hooks/hooks.json')
+    }
+    // Codex exports PLUGIN_ROOT; Claude Code exports only CLAUDE_PLUGIN_ROOT.
     const hooks = JSON.parse(readFileSync('plugin/hooks/hooks.json', 'utf8'))
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
-      expect(JSON.stringify(hooks.hooks[event])).toContain('${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs')
+      expect(JSON.stringify(hooks.hooks[event])).toContain('${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/hook.mjs')
     }
-    const marketplace = JSON.parse(readFileSync('.claude-plugin/marketplace.json', 'utf8'))
-    expect(marketplace.plugins.map((plugin: { name: string }) => plugin.name)).toContain('evo')
+  })
+
+  it('is offered by a marketplace for each host, from the one plugin directory', () => {
+    const claude = JSON.parse(readFileSync('.claude-plugin/marketplace.json', 'utf8'))
+    expect(claude.plugins.map((plugin: { name: string }) => plugin.name)).toContain('evo')
+    expect(claude.plugins[0].source).toBe('./plugin')
+
+    const codex = JSON.parse(readFileSync('.agents/plugins/marketplace.json', 'utf8'))
+    expect(codex.plugins.map((plugin: { name: string }) => plugin.name)).toContain('evo')
+    expect(codex.plugins[0].source).toEqual({ source: 'local', path: './plugin' })
   })
 })

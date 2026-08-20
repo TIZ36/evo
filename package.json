@@ -51,6 +51,7 @@
     "cordis.patch.yml",
     "install_evo_dsps.sh",
     "install_evo_claude.sh",
+    "install_evo_codex.sh",
     "README.md",
     "LICENSE"
   ],

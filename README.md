@@ -23,7 +23,7 @@ it learned across sessions without you writing it down.
 
 - [Features](#features) · [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start)
 - [How it works](#how-it-works) · [Workspace import](#workspace-import) · [Settings panel](#settings--memory-panel)
-- [Claude Code hook](#claude-code-hook) · [HTTP API](#http-api)
+- [Claude Code hook](#claude-code-hook) · [Codex plugin](#codex-plugin) · [HTTP API](#http-api)
 - [Configuration](#configuration) · [Service API](#service-api) · [Scopes](#memory-scopes)
 - [Privacy](#privacy-and-safety) · [Limitations](#limitations) · [Development](#development) · [License](#license)
 
@@ -41,8 +41,9 @@ it learned across sessions without you writing it down.
   `MemoryMaterializer`, `MemoryEventSink`); SQLite and DeepSeek Harness are implementations.
 - **Native web panel.** A Settings → Memory page plus a composer status chip, shipped as a
   plain-JS client half with no extra build step.
-- **Claude Code hook.** A hook bridge that recalls memory into any Claude Code session and
-  distils finished turns back into it, using the CLI's own credentials.
+- **Claude Code and Codex plugin.** One hook bridge, shipped as a plugin to both CLIs: it
+  recalls memory into a session and distils finished turns back into it, using whichever CLI
+  it runs under — and that CLI's own credentials.
 
 ## Requirements
 
@@ -220,7 +221,8 @@ globally and per-project makes evo run twice per turn — pick one.
 | `Stop` | Hands the finished turn to a detached child process that distils it into memory |
 
 Reflection runs through the local `claude -p` CLI, reusing the credentials Claude
-Code already has. It takes several seconds, so the `Stop` hook returns
+Code already has (under Codex it is `codex exec` instead — see
+[Codex plugin](#codex-plugin)). It takes several seconds, so the `Stop` hook returns
 immediately and the work continues in a detached process — a session is never
 blocked by evo. The child runs with `EVO_HOOK_DISABLE=1` so its own hooks exit at
 once; without that guard reflection would recurse.
@@ -228,15 +230,17 @@ once; without that guard reflection would recurse.
 ### As a plugin
 
 The repository is also a plugin marketplace: `.claude-plugin/marketplace.json`
-offers a single plugin whose source is [`plugin/`](plugin), holding the manifest,
-`hooks/hooks.json`, and one dependency-free bundle at `plugin/bin/hook.mjs`.
+offers a single plugin whose source is [`plugin/`](plugin), holding both hosts'
+manifests, `hooks/hooks.json`, and one dependency-free bundle at
+`plugin/bin/hook.mjs`. [Codex](#codex-plugin) installs that same directory.
 
-That bundle is committed on purpose. Claude Code installs a plugin by copying the
-repository: it runs no build step, and restores dependencies only for npm and bun
-lockfiles, never pnpm. So the plugin has to be runnable exactly as checked in —
-`pnpm build` regenerates it, `pnpm test` fails if it drifts from the source, and
-the hook commands address it through `${CLAUDE_PLUGIN_ROOT}` so no machine path
-is ever written down.
+That bundle is committed on purpose. Both hosts install a plugin by copying the
+repository: they run no build step, and Claude Code restores dependencies only
+for npm and bun lockfiles, never pnpm. So the plugin has to be runnable exactly
+as checked in — `pnpm build` regenerates it, `pnpm test` fails if it drifts from
+the source, and the hook commands address it through
+`${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}` (Codex exports the first, Claude Code the
+second) so no machine path is ever written down.
 
 
 ### What you see
@@ -260,12 +264,13 @@ goes to `<dataDir>/hook.log`.
 | --- | --- | --- |
 | `EVO_HOOK_REFLECT` | `1` | Set `0` to recall only and never write memory |
 | `EVO_HOOK_IMPORT` | `1` | Set `0` to skip the workspace import on session start |
-| `EVO_HOOK_MODEL` | `claude-haiku-4-5-20251001` | Model used for reflection |
+| `EVO_HOOK_MODEL` | `claude-haiku-4-5-20251001` under Claude Code, your own model under Codex | Model used for reflection |
 | `EVO_HOOK_RECALL_LIMIT` | `40` | Memories considered per recall |
 | `EVO_HOOK_MAX_CHARS` | `6000` | Character budget of the injected context |
 | `EVO_HOOK_NOTIFY` | `1` | Set `0` to remove the transcript line entirely |
 | `EVO_HOOK_DEBUG` | unset | Set `1` to log every recall, import and reflection |
 | `EVO_HOOK_DISABLE` | unset | Set `1` to make the hook a no-op (used for the recursion guard) |
+| `EVO_HOOK_HOST` | auto | `claude` or `codex`, when the host has to be forced |
 
 Project memory is keyed by the canonical (symlink-resolved) working directory.
 When a project moves, or was first recorded through a different path, re-point
@@ -275,6 +280,51 @@ its memories with:
 node scripts/migrate-project-scope.mjs --from /old/path --to /new/path   # add --apply to write
 node scripts/migrate-project-scope.mjs --canonicalize                    # add --apply to write
 ```
+
+## Codex plugin
+
+The same bundle is a Codex plugin. `plugin/` carries both manifests
+(`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`) over one
+`hooks/hooks.json` and one `bin/hook.mjs`, and the repository is a marketplace
+for either host — `.claude-plugin/marketplace.json` for Claude Code,
+`.agents/plugins/marketplace.json` for Codex.
+
+Install it the same way, from the CLI:
+
+```bash
+codex plugin marketplace add TIZ36/evo
+codex plugin add evo@evo
+```
+
+or patch the hooks file directly with the installer:
+
+```bash
+./install_evo_codex.sh              # install or upgrade, for every project
+./install_evo_codex.sh --uninstall  # remove evo's entries again
+```
+
+It writes `~/.codex/hooks.json` (override the location with `CODEX_HOME`) and is
+re-runnable on the same terms as the Claude Code installer. Codex asks you to
+trust a hook command the first time it runs one; until you say yes, evo stays
+inert. Use the plugin or the installer, not both.
+
+Three things differ from Claude Code, and evo handles all three itself:
+
+- **The transcript.** Codex writes a rollout — `{ type, payload }` per line — so
+  the turn is read from its event stream, where the prompt has no
+  `<environment_context>` block and reasoning is already split off the answer.
+  The format is detected from the transcript's own bytes, so one bundle serves
+  both hosts.
+- **Reflection.** It goes through `codex exec` instead of `claude -p`, again with
+  no key of evo's own. With no `EVO_HOOK_MODEL`, the model is whatever your Codex
+  configuration already selects — evo has no opinion worth hardcoding there.
+- **`codex exec` runs no lifecycle hooks.** Hooks fire in the interactive CLI, so
+  the reflection child cannot recurse even before the `EVO_HOOK_DISABLE` guard.
+  It does, however, wait on piped stdin for input to append to the prompt, so
+  evo closes it — otherwise every reflection would hang until its timeout.
+
+Everything else is the same: the same SQLite file, the same scopes, the same
+`systemMessage` line, the same variables in the table above.
 
 ## HTTP API
 
@@ -387,7 +437,8 @@ authoritative.
 - Recall is deterministic SQLite filtering and ranking, without embeddings.
 - Reflection runs once per successful turn; queueing and sleep consolidation are not included yet.
 - Consolidation is not scheduled automatically; call `consolidate()` explicitly.
-- There are no Paper, Claude, Codex, MCP, remote-store, or synchronization adapters yet.
+- Claude Code and Codex are supported through the hook plugin; there are no Paper, MCP,
+  remote-store, or synchronization adapters yet.
 - `node:sqlite` is still marked experimental by current Node releases even though it ships with
   Node 22+.
 

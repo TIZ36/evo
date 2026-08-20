@@ -1,0 +1,22 @@
+{
+  "name": "evo",
+  "version": "0.2.0",
+  "description": "Evolving memory for agents: recall before the model thinks, reflect after it answers.",
+  "homepage": "https://github.com/TIZ36/evo",
+  "repository": "https://github.com/TIZ36/evo",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "recall",
+    "hooks"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "evo",
+    "shortDescription": "Memory that recalls before the model thinks",
+    "longDescription": "Recalls durable global and project memory into every session, and distils each finished turn back into it. Storage is one local SQLite file; reflection runs through the Codex CLI you already have, so evo needs no API key of its own.",
+    "developerName": "Paper team",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Automation"]
+  }
+}

@@ -9,5 +9,6 @@
     "memory",
     "recall",
     "hooks"
-  ]
+  ],
+  "hooks": "./hooks/hooks.json"
 }

@@ -1,0 +1,14 @@
+{
+  "name": "evo",
+  "interface": {
+    "displayName": "evo"
+  },
+  "plugins": [
+    {
+      "name": "evo",
+      "source": { "source": "local", "path": "./plugin" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Productivity"
+    }
+  ]
+}

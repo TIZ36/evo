@@ -4819,6 +4819,164 @@ var ClaudeCliModelRunner = class {
 		});
 	}
 };
+/**
+* Reflection through the local Codex CLI (`codex exec`), the counterpart of
+* {@link ClaudeCliModelRunner}: the hook borrows the credentials and the model
+* the host CLI is already configured with, so a plugin install needs no key.
+*
+* Two differences from Claude Code shape this. Codex prints a rendered
+* transcript on stdout, so the answer is collected through
+* `--output-last-message` instead; and it has no default model of its own worth
+* hardcoding, so an unset model means the user's own configuration.
+*/
+var CodexCliModelRunner = class {
+	command;
+	model;
+	timeoutMs;
+	maxPromptChars;
+	constructor(options = {}) {
+		this.command = options.command ?? "codex";
+		this.model = options.model?.trim() ?? "";
+		this.timeoutMs = options.timeoutMs ?? 3e5;
+		this.maxPromptChars = options.maxPromptChars ?? 24e3;
+	}
+	complete(request) {
+		const prompt = request.prompt.length > this.maxPromptChars ? `${request.prompt.slice(0, this.maxPromptChars)}\n…[truncated]` : request.prompt;
+		const dir = mkdtempSync(join(tmpdir(), "evo-reflect-"));
+		const answerPath = join(dir, "answer.txt");
+		const args = [
+			"exec",
+			"--skip-git-repo-check",
+			"--ephemeral",
+			"--color",
+			"never",
+			"--sandbox",
+			"read-only",
+			"--output-last-message",
+			answerPath,
+			"--cd",
+			dir
+		];
+		if (this.model) args.push("--model", this.model);
+		args.push(prompt);
+		return new Promise((resolve, reject) => {
+			execFile(this.command, args, {
+				timeout: this.timeoutMs,
+				maxBuffer: 8388608,
+				env: {
+					...process.env,
+					EVO_HOOK_DISABLE: "1"
+				},
+				...request.signal ? { signal: request.signal } : {}
+			}, (error) => {
+				try {
+					if (error) return reject(/* @__PURE__ */ new Error(`${this.command} ${request.purpose} failed: ${error.message}`));
+					const answer = readText(answerPath);
+					if (!answer.trim()) return reject(/* @__PURE__ */ new Error(`${this.command} ${request.purpose} returned no text`));
+					resolve(answer);
+				} finally {
+					rmSync(dir, {
+						recursive: true,
+						force: true
+					});
+				}
+			}).stdin?.end();
+		});
+	}
+};
+function readText(path) {
+	try {
+		return readFileSync(path, "utf8");
+	} catch {
+		return "";
+	}
+}
+//#endregion
+//#region src/hook/codex-transcript.ts
+function parseCodexTranscript(text) {
+	const lines = [];
+	for (const raw of text.split("\n")) {
+		const trimmed = raw.trim();
+		if (!trimmed) continue;
+		try {
+			lines.push(JSON.parse(trimmed));
+		} catch {
+			continue;
+		}
+	}
+	return lines;
+}
+/**
+* Both hosts write JSONL, so the transcript itself says which one produced it:
+* only Codex wraps its lines in the `session_meta` / `response_item` /
+* `event_msg` envelope. Sniffing beats guessing from the environment, because
+* the host that spawned the hook is the host whose transcript this is.
+*/
+function isCodexTranscript(text) {
+	for (const line of parseCodexTranscript(text)) {
+		if (line.type === "session_meta" || line.type === "response_item" || line.type === "event_msg") return true;
+		if (line.type === "user" || line.type === "assistant") return false;
+	}
+	return false;
+}
+/** The newest user prompt and everything the agent did after it. */
+function extractLatestCodexTurn(lines, fallbackAssistant) {
+	const promptIndexes = lines.map((line, index) => isUserMessage(line) ? index : -1).filter((index) => index >= 0);
+	const start = promptIndexes.at(-1);
+	if (start === void 0) return null;
+	const user = messageText(lines[start]).trim();
+	const rest = lines.slice(start + 1);
+	const assistant = rest.filter(isAgentMessage).map((line) => messageText(line).trim()).filter(Boolean).join("\n\n");
+	const tools = [...new Set(rest.map(toolName).filter(Boolean))];
+	return {
+		user,
+		assistant: assistant || (fallbackAssistant ?? "").trim(),
+		tools,
+		turn: promptIndexes.length
+	};
+}
+function isUserMessage(line) {
+	return line.type === "event_msg" && line.payload?.type === "user_message" && messageText(line).trim().length > 0;
+}
+function isAgentMessage(line) {
+	return line.type === "event_msg" && line.payload?.type === "agent_message";
+}
+/**
+* Tool calls arrive as response items. `function_call` and `custom_tool_call`
+* name themselves; `local_shell_call` is the built-in shell and carries no name.
+*/
+function toolName(line) {
+	if (line.type !== "response_item") return "";
+	const kind = line.payload?.type;
+	if (kind === "local_shell_call") return "shell";
+	if (kind !== "function_call" && kind !== "custom_tool_call") return "";
+	return String(line.payload?.name ?? "");
+}
+function messageText(line) {
+	const message = line.payload?.message;
+	if (typeof message === "string") return message;
+	return "";
+}
+//#endregion
+//#region src/hook/host.ts
+/**
+* evo ships one hook bundle for both hosts, so it has to know which one invoked
+* it — the transcript is parsed differently and reflection is delegated to a
+* different CLI.
+*
+* The transcript decides when there is one: it is written by the host itself,
+* which no environment heuristic can beat. Codex also exports `PLUGIN_ROOT` and
+* `CODEX_HOME`, while Claude Code exports only its `CLAUDE_*` variables. An
+* explicit `EVO_HOOK_HOST` overrides everything, for hosts that later blur
+* those signals.
+*/
+function hookHost(env = process.env, transcript) {
+	const declared = env.EVO_HOOK_HOST?.trim().toLowerCase();
+	if (declared === "codex" || declared === "claude") return declared;
+	if (transcript?.trim()) return isCodexTranscript(transcript) ? "codex" : "claude";
+	if (env.CODEX_HOME?.trim() || env.PLUGIN_ROOT?.trim()) return "codex";
+	return "claude";
+}
 //#endregion
 //#region src/hook/notice.ts
 const FILE = "hook-notice.json";
@@ -4942,15 +5100,16 @@ function hookConfig(env = process.env) {
 		maxChars: positive(env.EVO_HOOK_MAX_CHARS) ?? 6e3,
 		reflect: env.EVO_HOOK_REFLECT !== "0",
 		importWorkspace: env.EVO_HOOK_IMPORT !== "0",
-		model: env.EVO_HOOK_MODEL?.trim() || "claude-haiku-4-5-20251001",
+		model: env.EVO_HOOK_MODEL?.trim() ?? "",
 		notify: env.EVO_HOOK_NOTIFY !== "0",
 		debug: env.EVO_HOOK_DEBUG === "1"
 	};
 }
 /**
-* Text injected into the model's context. Claude Code shows a `SessionStart` /
-* `UserPromptSubmit` hook's stdout to the model verbatim, so recall is simply
-* the rendered memory context — empty when there is nothing to say.
+* Text injected into the model's context. Both hosts pass a `SessionStart` /
+* `UserPromptSubmit` hook's `additionalContext` to the model verbatim, so
+* recall is simply the rendered memory context — empty when there is nothing
+* to say.
 */
 async function recallContext(event, service, config) {
 	return service.context({
@@ -4959,13 +5118,18 @@ async function recallContext(event, service, config) {
 		maxChars: config.maxChars
 	});
 }
-/** Rebuilds the finished turn from the transcript and distils it into memory. */
-async function reflectTurn(event, service) {
-	if (!event.transcript_path) return null;
-	const draft = extractLatestTurn(parseTranscript(readFileSync(event.transcript_path, "utf8")), event.last_assistant_message);
+/**
+* Rebuilds the finished turn from the transcript and distils it into memory.
+* The transcript text is passed in when the caller has already read it — the
+* host is decided from the same bytes, and a rollout can be large.
+*/
+async function reflectTurn(event, service, transcript) {
+	const text = transcript ?? readTranscript(event);
+	if (text === null) return null;
+	const draft = draftTurn(text, event.last_assistant_message);
 	if (!draft || !draft.user || !draft.assistant) return null;
 	return service.reflect({
-		sessionId: event.session_id ?? "claude-code",
+		sessionId: event.session_id ?? "agent-hook",
 		turn: draft.turn,
 		scope: event.cwd ? projectScope(event.cwd) : { type: "global" },
 		user: draft.user,
@@ -4974,7 +5138,7 @@ async function reflectTurn(event, service) {
 	});
 }
 /**
-* Claude Code renders `systemMessage` as its own element in the transcript, so
+* Both hosts render `systemMessage` as their own element in the transcript, so
 * it is evo's only visible surface here. It stays silent on an ordinary recall
 * and speaks only when evo learned something, or when it is broken.
 */
@@ -4994,6 +5158,23 @@ function hookOutput(context, systemMessage, event) {
 function noticeMessage(event, config, dir) {
 	if (!config.notify || event.hook_event_name !== "UserPromptSubmit") return void 0;
 	return formatNotice(takeNotice(dir));
+}
+/** Reads the event's transcript, or null when there is none to read. */
+function readTranscript(event) {
+	if (!event.transcript_path) return null;
+	try {
+		return readFileSync(event.transcript_path, "utf8");
+	} catch {
+		return null;
+	}
+}
+/** One turn out of either host's transcript format, told apart by its content. */
+function draftTurn(transcript, fallbackAssistant) {
+	return isCodexTranscript(transcript) ? extractLatestCodexTurn(parseCodexTranscript(transcript), fallbackAssistant) : extractLatestTurn(parseTranscript(transcript), fallbackAssistant);
+}
+/** Reflection is delegated to the host's own CLI, with the host's own credentials. */
+function modelRunner(host, config) {
+	return host === "codex" ? new CodexCliModelRunner({ model: config.model }) : new ClaudeCliModelRunner({ model: config.model || "claude-haiku-4-5-20251001" });
 }
 function openService() {
 	const store = new SqliteMemoryStore(resolveDataPaths().databasePath);
@@ -5055,13 +5236,15 @@ async function runDetachedReflect(payloadPath, config) {
 		recursive: true,
 		force: true
 	});
+	const transcript = readTranscript(event);
+	const host = hookHost(process.env, transcript ?? void 0);
 	const { service, store } = openService();
-	service.setModelRunner(new ClaudeCliModelRunner({ model: config.model }));
+	service.setModelRunner(modelRunner(host, config));
 	try {
-		const delta = await reflectTurn(event, service);
+		const delta = transcript === null ? null : await reflectTurn(event, service, transcript);
 		if (delta && config.notify) writeNotice(dataDir(), delta);
 		if (!config.debug) return;
-		log(delta ? `reflect ok created=${delta.created.length} updated=${delta.updated.length}` : "reflect skipped: no usable turn in the transcript");
+		log(delta ? `reflect ok host=${host} created=${delta.created.length} updated=${delta.updated.length}` : `reflect skipped: no usable turn in the ${host} transcript`);
 	} finally {
 		store.close?.();
 	}
@@ -5087,4 +5270,4 @@ if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(selfPath
 	if (hookConfig().notify) process.stdout.write(JSON.stringify({ systemMessage: `evo · memory unavailable: ${reason}` }));
 }).finally(() => process.exit(0));
 //#endregion
-export { hookConfig, hookOutput, noticeMessage, openService, recallContext, reflectTurn };
+export { draftTurn, hookConfig, hookOutput, modelRunner, noticeMessage, openService, readTranscript, recallContext, reflectTurn };
