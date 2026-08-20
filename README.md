@@ -22,7 +22,8 @@ it learned across sessions without you writing it down.
 ## Contents
 
 - [Features](#features) · [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start)
-- [How it works](#how-it-works) · [Workspace import](#workspace-import) · [Settings panel](#settings--memory-panel) · [HTTP API](#http-api)
+- [How it works](#how-it-works) · [Workspace import](#workspace-import) · [Settings panel](#settings--memory-panel)
+- [Claude Code hook](#claude-code-hook) · [HTTP API](#http-api)
 - [Configuration](#configuration) · [Service API](#service-api) · [Scopes](#memory-scopes)
 - [Privacy](#privacy-and-safety) · [Limitations](#limitations) · [Development](#development) · [License](#license)
 
@@ -40,6 +41,8 @@ it learned across sessions without you writing it down.
   `MemoryMaterializer`, `MemoryEventSink`); SQLite and DeepSeek Harness are implementations.
 - **Native web panel.** A Settings → Memory page plus a composer status chip, shipped as a
   plain-JS client half with no extra build step.
+- **Claude Code hook.** A hook bridge that recalls memory into any Claude Code session and
+  distils finished turns back into it, using the CLI's own credentials.
 
 ## Requirements
 
@@ -162,6 +165,63 @@ The client half is carried by a no-op Loader row named by the bare package (`evo
 `cordis.patch.yml`): the client-modules scan discovers `dsh.client` packages only through bare
 package names, so a subpath row like `evo/cordis` cannot carry a web client. Restart Harness after
 upgrading so the new boot graph includes the panel.
+
+## Claude Code hook
+
+evo also plugs into Claude Code (CLI and desktop, which share `~/.claude/settings.json`)
+through its hook system — no Harness, no web server, no API key of its own.
+
+```json
+{
+  "hooks": {
+    "SessionStart":     [ { "hooks": [ { "type": "command", "command": "evo-hook", "timeout": 20 } ] } ],
+    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "evo-hook", "timeout": 20 } ] } ],
+    "Stop":             [ { "hooks": [ { "type": "command", "command": "evo-hook", "timeout": 20 } ] } ]
+  }
+}
+```
+
+Put it in `~/.claude/settings.json` for every project, or in a project's
+`.claude/settings.json` to scope it to one repository. `hooks` entries are
+arrays, so this coexists with hooks you already run. A copyable file is in
+[`examples/claude-code-settings.json`](examples/claude-code-settings.json).
+
+`evo-hook` is the package's bin; from a local checkout use
+`node /path/to/evo/dist/hook/cli.mjs` as the command instead.
+
+| Event | What evo does |
+| --- | --- |
+| `SessionStart` | Imports the workspace's agent files, then prints recalled memory into the session |
+| `UserPromptSubmit` | Prints global + project memory, which Claude Code injects as context |
+| `Stop` | Hands the finished turn to a detached child process that distils it into memory |
+
+Reflection runs through the local `claude -p` CLI, reusing the credentials Claude
+Code already has. It takes several seconds, so the `Stop` hook returns
+immediately and the work continues in a detached process — a session is never
+blocked by evo. The child runs with `EVO_HOOK_DISABLE=1` so its own hooks exit at
+once; without that guard reflection would recurse.
+
+The hook writes nothing to the session on failure — it always exits 0 — so
+problems are recorded in `<dataDir>/hook.log` instead.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EVO_HOOK_REFLECT` | `1` | Set `0` to recall only and never write memory |
+| `EVO_HOOK_IMPORT` | `1` | Set `0` to skip the workspace import on session start |
+| `EVO_HOOK_MODEL` | `claude-haiku-4-5-20251001` | Model used for reflection |
+| `EVO_HOOK_RECALL_LIMIT` | `40` | Memories considered per recall |
+| `EVO_HOOK_MAX_CHARS` | `6000` | Character budget of the injected context |
+| `EVO_HOOK_DEBUG` | unset | Set `1` to log every reflection outcome |
+| `EVO_HOOK_DISABLE` | unset | Set `1` to make the hook a no-op (used for the recursion guard) |
+
+Project memory is keyed by the canonical (symlink-resolved) working directory.
+When a project moves, or was first recorded through a different path, re-point
+its memories with:
+
+```bash
+node scripts/migrate-project-scope.mjs --from /old/path --to /new/path   # add --apply to write
+node scripts/migrate-project-scope.mjs --canonicalize                    # add --apply to write
+```
 
 ## HTTP API
 

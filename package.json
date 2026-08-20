@@ -32,6 +32,10 @@
       "types": "./dist/deepseek/index.d.mts",
       "default": "./dist/deepseek/index.mjs"
     },
+    "./hook": {
+      "types": "./dist/hook/cli.d.mts",
+      "default": "./dist/hook/cli.mjs"
+    },
     "./client": {
       "default": "./dist/client.js"
     },
@@ -79,10 +83,18 @@
     "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.2 <0.2.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-agent": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-session": { "optional": true },
-    "@deepseek-ai/dsh-system-prompt": { "optional": true }
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
@@ -93,5 +105,8 @@
     "tsdown": "^0.22.0",
     "typescript": "^6.0.0",
     "vitest": "^4.0.0"
+  },
+  "bin": {
+    "evo-hook": "./dist/hook/cli.mjs"
   }
 }
