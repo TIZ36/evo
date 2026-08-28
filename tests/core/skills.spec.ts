@@ -7,6 +7,7 @@ import type { MemoryItem, MemoryScope, SkillBody, SkillItem } from '../../src/co
 import type { MemoryStore, ModelRunner, SkillStore } from '../../src/core/contracts.js'
 import { SqliteMemoryStore } from '../../src/storage/sqlite-store.js'
 import { buildCatalogEntries, materializeSkill, renderLessonsMarkdown, renderSkillMarkdown, setCredentialSkipLogger, SKILL_ROOT, updateCatalog } from '../../src/workspace/skill-materializer.js'
+import { syntheticCredential } from '../helpers/synthetic-credential.js'
 
 class MemoryStoreStub implements MemoryStore {
   rows = new Map<string, MemoryItem>()
@@ -540,13 +541,14 @@ describe('Imported skill protection', () => {
 describe('Credential skip on write', () => {
   it('skips materializing skill with credentials in body', () => {
     const cwd = fixture()
+    const secretKey = syntheticCredential(['sk-proj-', 'abc123def456ghi789jkl012mno345pqr678stu901vwx234'])
     const skill: SkillItem = {
       name: 'credential-skill',
       scope,
       body: {
         purpose: 'Deploy with secret key',
         trigger: 'When deploying',
-        steps: '1. Set API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n2. Deploy',
+        steps: `1. Set API_KEY=${secretKey}\n2. Deploy`,
         check: 'Check deployment succeeded',
       },
       usageCount: 0,
@@ -582,8 +584,9 @@ describe('Credential skip on write', () => {
       dormant: false,
       promoted: false,
     }
+    const ghpToken = syntheticCredential(['ghp_', '1234567890abcdefghijklmnopqrstuvwxyzAB'])
     const lessons = [
-      { text: 'Used ghp_1234567890abcdefghijklmnopqrstuvwxyzAB for auth', createdAt: 2000 },
+      { text: `Used ${ghpToken} for auth`, createdAt: 2000 },
     ]
 
     const logs: string[] = []
@@ -624,8 +627,9 @@ describe('Credential skip on write', () => {
 
   it('skips catalog update with credentials in entries', () => {
     const cwd = fixture()
+    const secretKey = syntheticCredential(['sk-proj-', 'abc123def456ghi789jkl012mno345pqr678stu901vwx234'])
     const entries = [
-      { name: 'secret-skill', trigger: 'Use key sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234', path: '.paper/agents/skills/secret-skill' },
+      { name: 'secret-skill', trigger: `Use key ${secretKey}`, path: '.paper/agents/skills/secret-skill' },
     ]
 
     const logs: string[] = []
