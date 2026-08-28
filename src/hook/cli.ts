@@ -145,7 +145,7 @@ export function modelRunner(host: HookHost, config: HookConfig): ClaudeCliModelR
 
 export function openService(): { service: EvoService; store: SqliteMemoryStore } {
   const store = new SqliteMemoryStore(resolveDataPaths().databasePath)
-  return { service: new EvoService({ store, events: store }), store }
+  return { service: new EvoService({ store, skillStore: store, events: store }), store }
 }
 
 // ── entry ─────────────────────────────────────────────────────────────────
@@ -231,17 +231,14 @@ async function runDetachedFlush(payloadPath: string, config: HookConfig): Promis
   const total: MemoryDelta = { created: [], updated: [], deleted: [] }
   try {
     for (const batch of payload.batches ?? []) {
-      /* Each batch reflects through the host that produced it: a batch outlives
-         the transcript it came from, and may not be distilled until a later
-         session — possibly one running under the other host. */
       service.setModelRunner(modelRunner(batch.host, config))
-      /* One batch failing must not strand the rest: they are already out of the
-         queue, so a thrown error here would lose those turns for good. */
       try {
         const result = await service.reflectBatch(batchTurns(batch))
         const delta = result.memories
         total.created.push(...delta.created); total.updated.push(...delta.updated); total.deleted.push(...delta.deleted)
         if (config.debug) log(`reflect ok host=${batch.host} turns=${batch.turns.length} created=${delta.created.length} updated=${delta.updated.length} evicted=${delta.deleted.length}`)
+
+        await runSlowPath(service, batch.scope, config)
       } catch (error) {
         log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${String(error instanceof Error ? error.message : error)}`)
       }
@@ -249,6 +246,39 @@ async function runDetachedFlush(payloadPath: string, config: HookConfig): Promis
     if (config.notify) writeNotice(dataDir(), total)
   } finally {
     store.close?.()
+  }
+}
+
+/** Run slow-path maintenance: auto-consolidate, enforce capacity, dormancy, polish. */
+async function runSlowPath(service: EvoService, scope: MemoryScope, config: HookConfig): Promise<void> {
+  try {
+    const consolidateCheck = await service.shouldAutoConsolidate(scope)
+    if (consolidateCheck.shouldConsolidate) {
+      if (config.debug) log(`auto-consolidate triggered: ${consolidateCheck.reason}, replay=${consolidateCheck.replaySize}, hours=${consolidateCheck.hoursSinceLastConsolidate.toFixed(1)}`)
+      const result = await service.autoConsolidate(scope)
+      if (result?.result && config.debug) {
+        log(`auto-consolidate ok: ${result.result.before} -> ${result.result.after} memories, converged=${result.converged}`)
+      }
+    }
+
+    const evicted = await service.enforceCapacity(scope)
+    if (evicted.length && config.debug) {
+      log(`capacity enforcement evicted ${evicted.length} memories`)
+    }
+
+    const dormant = await service.processDormancy(scope)
+    if (dormant.length && config.debug) {
+      log(`dormancy: ${dormant.length} skills made dormant`)
+    }
+
+    const polished = await service.processPolish(scope)
+    if (polished.length && config.debug) {
+      for (const p of polished) {
+        log(`polish ${p.skill}: ${p.result.polished ? 'ok' : p.result.error}`)
+      }
+    }
+  } catch (error) {
+    log(`ERROR slow-path failed: ${String(error instanceof Error ? error.message : error)}`)
   }
 }
 

@@ -18,6 +18,13 @@ class MemoryStoreStub implements MemoryStore {
     for (const [id, row] of this.rows) if (JSON.stringify(row.scope) === JSON.stringify(scope)) this.rows.delete(id)
     for (const row of items) this.rows.set(row.id, row)
   }
+  async count(scope: MemoryScope) {
+    return [...this.rows.values()].filter(r => JSON.stringify(r.scope) === JSON.stringify(scope)).length
+  }
+  async incrementMemoryUsage(id: string) {
+    const item = this.rows.get(id)
+    if (item) { item.usageCount += 1; this.rows.set(id, item) }
+  }
 }
 
 const scope: MemoryScope = { type: 'project', id: '/repo' }
@@ -57,6 +64,7 @@ describe('Skill types and storage', () => {
         createdAt: 1000,
         updatedAt: 1000,
         source: { runtime: 'evo' },
+        dormant: false,
       }
       await store.putSkill(skill)
       const retrieved = await store.getSkill(scope, 'git-commit-workflow')
@@ -76,6 +84,7 @@ describe('Skill types and storage', () => {
         usageCount: 0,
         createdAt: 1000,
         updatedAt: 1000,
+        dormant: false,
       }
       await store.putSkill(skill)
       await store.incrementUsage(scope, 'test-skill')
@@ -97,6 +106,7 @@ describe('Skill types and storage', () => {
         usageCount: 0,
         createdAt: 1000,
         updatedAt: 1000,
+        dormant: false,
       }
       await store.putSkill(skill)
       await store.addLesson(scope, 'skill-with-lessons', { text: 'First lesson', createdAt: 2000 })
@@ -121,6 +131,7 @@ describe('Skill types and storage', () => {
         usageCount: 0,
         createdAt: 1000,
         updatedAt: 1000,
+        dormant: false,
       }
       await store.putSkill(skill)
       await store.addLesson(scope, 'deletable-skill', { text: 'A lesson', createdAt: 2000 })
@@ -180,6 +191,7 @@ describe('Skill reflection', () => {
         createdAt: 1000,
         updatedAt: 1000,
         source: { runtime: 'evo' },
+        dormant: false,
       }
       await store.putSkill(existingSkill)
 
@@ -245,6 +257,7 @@ describe('Skill materialization', () => {
       usageCount: 0,
       createdAt: 1000,
       updatedAt: 1000,
+      dormant: false,
     }
     const md = renderSkillMarkdown(skill)
     expect(md).toContain('# Git Commit Workflow')
@@ -276,6 +289,7 @@ describe('Skill materialization', () => {
       usageCount: 0,
       createdAt: 1000,
       updatedAt: 1000,
+      dormant: false,
     }
     const lessons = [
       { text: 'Lesson one', createdAt: 2000 },
@@ -310,7 +324,7 @@ describe('Skill materialization', () => {
   it('builds catalog entries from skills', () => {
     const cwd = '/repo'
     const skills: SkillItem[] = [
-      { name: 'git-commit', scope, body: { purpose: 'p', trigger: 'When committing code', steps: 's', check: 'c' }, usageCount: 0, createdAt: 1, updatedAt: 1 },
+      { name: 'git-commit', scope, body: { purpose: 'p', trigger: 'When committing code', steps: 's', check: 'c' }, usageCount: 0, createdAt: 1, updatedAt: 1, dormant: false },
     ]
     const entries = buildCatalogEntries(cwd, skills)
     expect(entries).toHaveLength(1)
@@ -338,6 +352,7 @@ describe('Skill recall', () => {
         usageCount: 0,
         createdAt: 1000,
         updatedAt: 1000,
+        dormant: false,
       }
       await store.putSkill(skill)
 
@@ -367,6 +382,7 @@ describe('Skill usage tracking', () => {
         usageCount: 0,
         createdAt: 1000,
         updatedAt: 1000,
+        dormant: false,
       }
       await store.putSkill(skill)
 

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS skills (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   source_json TEXT,
+  dormant INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope_key, name)
 );
 CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);
@@ -59,7 +60,29 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
   session_id TEXT,
   turn INTEGER,
   created_at INTEGER NOT NULL,
+  folded INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (scope_key, skill_name) REFERENCES skills(scope_key, name) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS skill_lessons_skill ON skill_lessons(scope_key, skill_name);
+
+-- Replay buffer: raw distilled batches for slow-path consolidation.
+-- Interleaved with current memories to give the consolidator more evidence.
+CREATE TABLE IF NOT EXISTS replay_buffer (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_key TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  batch_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  consumed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS replay_buffer_scope ON replay_buffer(scope_key, consumed, created_at DESC);
+
+-- Consolidation state: tracks when last consolidate ran and convergence.
+CREATE TABLE IF NOT EXISTS consolidation_state (
+  scope_key TEXT PRIMARY KEY,
+  last_consolidate_at INTEGER NOT NULL DEFAULT 0,
+  last_digest TEXT,
+  converged INTEGER NOT NULL DEFAULT 0,
+  convergence_multiplier REAL NOT NULL DEFAULT 1.0
+);
 `

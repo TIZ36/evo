@@ -13,6 +13,13 @@ class MemoryStoreStub implements MemoryStore {
     for (const [id, row] of this.rows) if (JSON.stringify(row.scope) === JSON.stringify(scope)) this.rows.delete(id)
     for (const row of items) this.rows.set(row.id, row)
   }
+  async count(scope: MemoryScope) {
+    return [...this.rows.values()].filter(r => JSON.stringify(r.scope) === JSON.stringify(scope)).length
+  }
+  async incrementMemoryUsage(id: string) {
+    const item = this.rows.get(id)
+    if (item) { item.usageCount += 1; this.rows.set(id, item) }
+  }
 }
 
 const scope: MemoryScope = { type: 'project', id: '/repo' }

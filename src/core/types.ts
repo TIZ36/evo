@@ -52,6 +52,7 @@ export const skillItemSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   source: skillSourceSchema.optional(),
+  dormant: z.boolean().default(false),
 })
 export type SkillItem = z.infer<typeof skillItemSchema>
 
@@ -73,11 +74,55 @@ export type SkillQuery = {
   scopes?: MemoryScope[]
   text?: string
   limit?: number
+  includeDormant?: boolean
 }
 
 export type SkillDelta = {
   created: SkillItem | null
   updated: SkillItem | null
+}
+
+// ── Consolidation types ───────────────────────────────────────────────────────
+
+/** Raw batch stored in replay buffer for slow-path consolidation. */
+export type ReplayEntry = {
+  id: number
+  scope: MemoryScope
+  batch: { memories: Array<{ title: string; content: string; kind: MemoryKind }> }
+  createdAt: number
+  consumed: boolean
+}
+
+/** Consolidation state for a scope. */
+export type ConsolidationState = {
+  scopeKey: string
+  lastConsolidateAt: number
+  lastDigest: string | null
+  converged: boolean
+  convergenceMultiplier: number
+}
+
+/** Result of a sleep/auto-consolidate check. */
+export type SleepCheckResult = {
+  shouldConsolidate: boolean
+  reason: 'backlog' | 'replay' | 'schedule' | 'none'
+  backlogSize: number
+  replaySize: number
+  hoursSinceLastConsolidate: number
+}
+
+// ── Retention types ───────────────────────────────────────────────────────────
+
+/** Store capacity configuration. */
+export type RetentionConfig = {
+  /** Max memories per scope before eviction. */
+  maxMemories: number
+  /** Days before a memory with 0 uses becomes eviction candidate. */
+  newbornGraceDays: number
+  /** Hours between auto-consolidate runs (base, before convergence multiplier). */
+  consolidateIntervalHours: number
+  /** Min hours between consolidates even when converged. */
+  convergedMinIntervalHours: number
 }
 
 export const memorySourceSchema = z.object({
