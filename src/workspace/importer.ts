@@ -50,8 +50,10 @@ const SKILL_BASES = [
   { base: '.copilot/skills', tool: 'copilot' },
   { base: '.agent/skills', tool: 'agent' },
   { base: '.paper/skills', tool: 'paper' },
-  { base: '.paper/agents/skills', tool: 'paper' },
 ]
+
+/** Evo-owned skill directory - skills here are managed through the skills table, not imported. */
+export const EVO_SKILL_ROOT = '.paper/agents/skills'
 
 const DIR_RULES: Array<Rule & { base: string }> = [
   { base: '.claude/commands', kind: 'procedure', tool: 'claude' },

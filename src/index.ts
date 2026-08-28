@@ -3,9 +3,13 @@ export * from './core/contracts.js'
 export * from './core/evo.js'
 export * from './core/json-model.js'
 export * from './core/prompt.js'
+export * from './core/consolidate.js'
+export * from './core/retention.js'
+export * from './core/skill-polish.js'
 export * from './config/paths.js'
 export * from './storage/sqlite-store.js'
 export * from './workspace/importer.js'
+export * from './workspace/skill-materializer.js'
 export { EvoCordisService } from './cordis/service.js'
 
 /**
