@@ -40,7 +40,7 @@ The result: your agent becomes an experienced colleague who remembers the projec
 
 ## Status
 
-evo is currently **alpha (0.2.x)**. The core loop is stable and used daily, but APIs may change. The project is MIT-licensed.
+evo is currently **alpha (0.3.x)**. The core loop is stable and used daily, but APIs may change. The project is MIT-licensed.
 
 ## Attribution
 
