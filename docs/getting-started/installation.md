@@ -3,7 +3,7 @@
 ## From npm
 
 ```bash
-pnpm add evo
+pnpm add @tiz36/evo
 ```
 
 ## From a Local Checkout
