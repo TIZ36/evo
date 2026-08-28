@@ -38,13 +38,16 @@ window.__ModuleLoader__.load({
     var useRef = React.useRef
 
     var API = '/evo'
-    var KINDS = ['fact', 'preference', 'constraint', 'procedure', 'skill']
+    var KINDS = ['fact', 'preference', 'constraint', 'procedure']
     /** Must match the settings.section label below — DOM navigation matches on it. */
     var SECTION_LABEL = 'Memory'
     /** Server-side filtering exists; offset does not. Until it does, this is the ceiling. */
     var PAGE_LIMIT = 300
     var SEARCH_DEBOUNCE_MS = 220
     var RECEIPT_MS = 2600
+    /** Panel modes: memories or skills catalog. */
+    var MODE_MEMORIES = 'memories'
+    var MODE_SKILLS = 'skills'
 
     function h(type, props) {
       var children = Array.prototype.slice.call(arguments, 2)
@@ -53,6 +56,15 @@ window.__ModuleLoader__.load({
 
     function api(path, options) {
       return fetch(API + path, options).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' on ' + path)
+        return res.json()
+      })
+    }
+
+    /** Fetch that returns null on 404 — for optional routes like /skills and /backlog. */
+    function apiOptional(path, options) {
+      return fetch(API + path, options).then(function (res) {
+        if (res.status === 404) return null
         if (!res.ok) throw new Error('HTTP ' + res.status + ' on ' + path)
         return res.json()
       })
@@ -479,6 +491,47 @@ window.__ModuleLoader__.load({
           'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
           'animation:evo-skel 1.4s var(--ds-ease-in-out,ease-out) infinite}',
 
+        // ── mode toggle ──────────────────────────────────────────────────
+        '.evo-modes{display:flex;gap:4px;margin:0 0 16px}',
+        '.evo-mode{height:28px;padding:0 14px;border:1px solid transparent;background:transparent;' +
+          'color:var(--dsw-alias-label-tertiary,#8a8a8a);border-radius:7px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;' +
+          'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out),border-color .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-mode:hover{color:var(--dsw-alias-label-primary,#262626)}',
+        '.evo-mode:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}',
+        '.evo-mode[data-active=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
+          'border-color:var(--dsw-alias-border-l1,#e4e4e4);color:var(--dsw-alias-label-primary,#262626)}',
+
+        // ── skills list ─────────────────────────────────────────────────
+        '.evo-skill{display:block;width:100%;border:none;background:transparent;color:inherit;font:inherit;text-align:left;' +
+          'cursor:pointer;padding:10px 12px;margin:0 -12px;width:calc(100% + 24px);border-radius:8px;' +
+          'border-bottom:1px solid var(--dsw-alias-border-l1,#e4e4e4);' +
+          'transition:background .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-skill:last-child{border-bottom:none}',
+        '.evo-skill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}',
+        '.evo-skill:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:-2px}',
+        '.evo-skill-top{display:flex;align-items:center;gap:8px;margin:0 0 4px}',
+        '.evo-skill-name{font-size:13.5px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#262626);' +
+          'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+        '.evo-skill-badge{flex:none;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;line-height:14px;' +
+          'letter-spacing:.05em;text-transform:uppercase}',
+        '.evo-skill-badge.promoted{color:var(--dsw-alias-state-business-primary,#4a9eff);' +
+          'background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4a9eff) 12%,transparent)}',
+        '.evo-skill-badge.dormant{color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
+          'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}',
+        '.evo-skill-trigger{font-size:13px;line-height:1.55;color:var(--dsw-alias-label-secondary,#555);' +
+          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60ch;margin:0 0 6px}',
+        '.evo-skill-meta{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:11px;line-height:16px;' +
+          'color:var(--dsw-alias-label-tertiary,#8a8a8a);font-variant-numeric:tabular-nums}',
+        '.evo-skill-meta .path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;' +
+          'color:var(--dsw-alias-label-tertiary,#8a8a8a);opacity:.8}',
+        '.evo-skill-meta .dot{opacity:.45}',
+
+        // ── backlog chip ────────────────────────────────────────────────
+        '.evo-backlog{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:5px;' +
+          'font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
+          'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
+        '.evo-backlog .n{font-weight:600;color:var(--dsw-alias-label-secondary,#555);font-variant-numeric:tabular-nums}',
+
         // ── composer chip + dock ──────────────────────────────────────────
         '.evo-chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:none;' +
           'background:transparent;border-radius:7px;cursor:pointer;color:var(--dsw-alias-label-secondary,#555);' +
@@ -620,6 +673,44 @@ window.__ModuleLoader__.load({
         h('p', { className: 'evo-row-body' }, highlight(item.content, props.query)))
     }
 
+    // ── Skills ─────────────────────────────────────────────────────────
+    function SkillRow(props) {
+      var skill = props.skill
+      var badges = []
+      if (skill.promoted) badges.push(h('span', { key: 'p', className: 'evo-skill-badge promoted' }, '★ promoted'))
+      if (skill.dormant) badges.push(h('span', { key: 'd', className: 'evo-skill-badge dormant' }, 'dormant'))
+      return h('button', {
+        className: 'evo-skill',
+        onClick: function () { props.onSelect && props.onSelect(skill) },
+        title: skill.trigger,
+      },
+        h('div', { className: 'evo-skill-top' },
+          h('span', { className: 'evo-skill-name' }, skill.name),
+          badges),
+        h('p', { className: 'evo-skill-trigger' }, skill.trigger),
+        h('div', { className: 'evo-skill-meta' },
+          h('span', null, skill.usageCount === 1 ? '1 use' : skill.usageCount + ' uses'),
+          h('span', { className: 'dot' }, '·'),
+          h('span', { className: 'path' }, skill.path)))
+    }
+
+    function SkillsList(props) {
+      var skills = props.skills || []
+      if (!skills.length) {
+        return h('div', { className: 'evo-empty' },
+          h(EvoMark, { size: 26, hollow: true }),
+          h('h3', null, 'No skills yet'),
+          h('p', null, 'evo distils reusable procedures into skills when it spots a repeatable workflow. ' +
+            'Skills are stored as SKILL.md files and applied automatically when their trigger matches.'))
+      }
+      return h('div', { className: 'evo-rows' },
+        skills.map(function (skill) {
+          return h(SkillRow, { key: skill.name, skill: skill, onSelect: props.onSelect })
+        }),
+        h('div', { className: 'evo-pager' },
+          h('span', null, skills.length === 1 ? '1 skill' : skills.length + ' skills')))
+    }
+
     function ScopeTree(props) {
       var rows = flattenScopes(props.roots, props.expanded, 0, [])
       return h('div', null,
@@ -749,6 +840,8 @@ window.__ModuleLoader__.load({
         status: null, roots: [], scopeKey: 'all', selectedScope: null, expanded: new Set(),
         items: [], detail: null, kind: 'all', text: '', query: '',
         error: '', loading: true, busy: false, freshIds: new Set(),
+        mode: MODE_MEMORIES, skills: [], skillsLoading: false, skillsError: '',
+        backlog: null, skillsAvailable: true,
       })
       var s = state[0]
       var set = state[1]
@@ -761,7 +854,7 @@ window.__ModuleLoader__.load({
 
       // Library is not a place you navigate to; it is what the panel becomes
       // once you are looking for something.
-      var searching = !!(s.query || s.kind !== 'all' || s.scopeKey !== 'all')
+      var searching = s.mode === MODE_MEMORIES && !!(s.query || s.kind !== 'all' || s.scopeKey !== 'all')
 
       var fetchMemories = useCallback(function (opts) {
         var params = ['limit=' + PAGE_LIMIT]
@@ -784,12 +877,43 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
+      var fetchSkills = useCallback(function (opts) {
+        opts = opts || {}
+        var params = ['limit=' + PAGE_LIMIT, 'includeDormant=true']
+        if (opts.scopeKey && opts.scopeKey !== 'all') params.push('scopeKey=' + encodeURIComponent(opts.scopeKey))
+        if (opts.query) params.push('text=' + encodeURIComponent(opts.query))
+        return apiOptional('/skills?' + params.join('&'))
+      }, [])
+
+      var fetchBacklog = useCallback(function (scope) {
+        if (!scope || scope.type === 'global') {
+          return apiOptional('/backlog?scopeType=global')
+        }
+        var params = ['scopeType=' + encodeURIComponent(scope.type)]
+        if (scope.id) params.push('scopeId=' + encodeURIComponent(scope.id))
+        return apiOptional('/backlog?' + params.join('&'))
+      }, [])
+
+      var loadSkills = useCallback(function () {
+        patch({ skillsLoading: true, skillsError: '' })
+        fetchSkills({ scopeKey: s.scopeKey, query: s.query }).then(function (json) {
+          if (json === null) {
+            patch({ skillsAvailable: false, skills: [], skillsLoading: false })
+            return
+          }
+          patch({ skills: json.skills || [], skillsLoading: false, skillsAvailable: true })
+        }).catch(function (err) {
+          patch({ skillsError: String(err.message || err), skillsLoading: false })
+        })
+      }, [patch, fetchSkills, s.scopeKey, s.query])
+
       var loadAll = useCallback(function () {
         patch({ loading: true, error: '' })
         Promise.all([
           api('/status'),
           fetchMemories({ scopeKey: s.scopeKey, kind: s.kind, query: s.query }),
           loadScopes(),
+          fetchBacklog(s.selectedScope),
         ]).then(function (results) {
           var items = results[1].items || []
           // Anything unseen since this panel mounted gets the fresh marker once.
@@ -804,12 +928,13 @@ window.__ModuleLoader__.load({
           patch({
             status: results[0], items: items, roots: results[2].roots, expanded: results[2].expanded,
             busy: !!(results[0] && results[0].busy), loading: false, freshIds: fresh,
+            backlog: results[3],
           })
         }).catch(function (err) {
           setEvoStore({ reachable: false })
           patch({ error: String(err.message || err), loading: false })
         })
-      }, [patch, fetchMemories, loadScopes, s.scopeKey, s.kind, s.query])
+      }, [patch, fetchMemories, loadScopes, fetchBacklog, s.scopeKey, s.kind, s.query, s.selectedScope])
 
       useEffect(function () {
         ensureEvoStyle()
@@ -817,6 +942,11 @@ window.__ModuleLoader__.load({
         // loadAll is re-created whenever a filter changes, which is exactly
         // when the list needs to be refetched.
       }, [loadAll])
+
+      // Load skills when switching to skills mode or when filters change.
+      useEffect(function () {
+        if (s.mode === MODE_SKILLS) loadSkills()
+      }, [s.mode, loadSkills])
 
       // Mirror the shared busy flag so the pending entry appears without the
       // explorer running a second poller.
@@ -869,12 +999,19 @@ window.__ModuleLoader__.load({
         })
       }
 
+      var backlogChip = s.backlog && s.backlog.replaySize > 0
+        ? h('span', { className: 'evo-backlog', title: 'Batches queued for next consolidation' },
+            h('span', { className: 'n' }, String(s.backlog.replaySize)),
+            ' in backlog')
+        : null
+
       var head = h('div', { className: 'evo-head' },
         h(EvoMark, { size: 17, busy: s.busy }),
         h('h2', { className: 'evo-title' }, SECTION_LABEL),
         h('span', { className: 'evo-dbpath' }, s.status ? s.status.databasePath : ''),
+        backlogChip,
         h('div', { className: 'evo-actions' },
-          h('button', { className: 'evo-btn evo-ghost', onClick: loadAll }, 'Refresh'),
+          h('button', { className: 'evo-btn evo-ghost', onClick: function () { s.mode === MODE_SKILLS ? loadSkills() : loadAll() } }, 'Refresh'),
           h('button', {
             className: 'evo-btn', disabled: !s.selectedScope || s.selectedScope.type !== 'project',
             title: s.selectedScope && s.selectedScope.type === 'project'
@@ -886,18 +1023,34 @@ window.__ModuleLoader__.load({
             className: 'evo-btn', 'data-accent': 'true', onClick: runConsolidate, disabled: s.loading,
           }, 'Consolidate')))
 
-      var toolbar = h('div', { className: 'evo-tools' },
-        h('input', {
-          className: 'evo-input', placeholder: 'Search memories', 'aria-label': 'Search memories',
-          value: s.text, onChange: onSearchChange,
-        }),
-        h('div', { className: 'evo-kinds' },
-          ['all'].concat(KINDS).map(function (kind) {
-            return h('button', {
-              key: kind, className: 'evo-tab', 'data-active': s.kind === kind ? 'true' : 'false',
-              onClick: function () { patch({ kind: kind, detail: null }) },
-            }, kind)
-          })))
+      var modeToggle = h('div', { className: 'evo-modes' },
+        h('button', {
+          className: 'evo-mode', 'data-active': s.mode === MODE_MEMORIES ? 'true' : 'false',
+          onClick: function () { patch({ mode: MODE_MEMORIES }) },
+        }, 'Memories'),
+        h('button', {
+          className: 'evo-mode', 'data-active': s.mode === MODE_SKILLS ? 'true' : 'false',
+          onClick: function () { patch({ mode: MODE_SKILLS }) },
+        }, 'Skills'))
+
+      var toolbar = s.mode === MODE_MEMORIES
+        ? h('div', { className: 'evo-tools' },
+            h('input', {
+              className: 'evo-input', placeholder: 'Search memories', 'aria-label': 'Search memories',
+              value: s.text, onChange: onSearchChange,
+            }),
+            h('div', { className: 'evo-kinds' },
+              ['all'].concat(KINDS).map(function (kind) {
+                return h('button', {
+                  key: kind, className: 'evo-tab', 'data-active': s.kind === kind ? 'true' : 'false',
+                  onClick: function () { patch({ kind: kind, detail: null }) },
+                }, kind)
+              })))
+        : h('div', { className: 'evo-tools' },
+            h('input', {
+              className: 'evo-input', placeholder: 'Search skills', 'aria-label': 'Search skills',
+              value: s.text, onChange: onSearchChange,
+            }))
 
       // ── hard states first ───────────────────────────────────────────────
       if (s.error) {
@@ -929,6 +1082,37 @@ window.__ModuleLoader__.load({
             })))
       }
 
+      // ── Skills ─────────────────────────────────────────────────────────
+      if (s.mode === MODE_SKILLS) {
+        if (!s.skillsAvailable) {
+          return h('div', { className: 'evo-page' }, head, modeToggle,
+            h('div', { className: 'evo-empty' },
+              h(EvoMark, { size: 26, hollow: true }),
+              h('h3', null, 'Skills endpoint not available'),
+              h('p', null, 'The /evo/skills API route is not present on this server. ' +
+                'Skills require a newer version of the evo service.')))
+        }
+        if (s.skillsLoading) {
+          return h('div', { className: 'evo-page' }, head, modeToggle,
+            h('div', { className: 'evo-skel' },
+              [0, 1, 2].map(function (row) {
+                return h('div', { key: row, className: 'evo-sk' },
+                  h('i', { style: { width: '38%' } }),
+                  h('i', { style: { width: '88%' } }),
+                  h('i', { style: { width: '26%', height: 7 } }))
+              })))
+        }
+        if (s.skillsError) {
+          return h('div', { className: 'evo-page' }, head, modeToggle,
+            h('div', { className: 'evo-alert', role: 'alert' },
+              h('span', null, 'Failed to load skills'),
+              h('code', null, s.skillsError)),
+            h('button', { className: 'evo-btn', onClick: loadSkills }, 'Retry'))
+        }
+        return h('div', { className: 'evo-page' }, head, modeToggle, toolbar,
+          h(SkillsList, { skills: s.skills }))
+      }
+
       // ── Library ─────────────────────────────────────────────────────────
       if (searching) {
         var filterChips = []
@@ -957,7 +1141,7 @@ window.__ModuleLoader__.load({
             }, '×')))
         }
 
-        return h('div', { className: 'evo-page' }, head,
+        return h('div', { className: 'evo-page' }, head, modeToggle,
           h('div', { className: 'evo-lib' },
             h(ScopeTree, {
               roots: s.roots, expanded: s.expanded, scopeKey: s.scopeKey,
@@ -988,7 +1172,7 @@ window.__ModuleLoader__.load({
 
       // ── Journal ─────────────────────────────────────────────────────────
       if (!s.items.length) {
-        return h('div', { className: 'evo-page' }, head,
+        return h('div', { className: 'evo-page' }, head, modeToggle,
           h('div', { className: 'evo-empty' },
             h(EvoMark, { size: 26, hollow: true }),
             h('h3', null, 'No memories yet'),
@@ -1000,7 +1184,7 @@ window.__ModuleLoader__.load({
               : null))
       }
 
-      return h('div', { className: 'evo-page' }, head,
+      return h('div', { className: 'evo-page' }, head, modeToggle,
         h(ContextBand, { counts: evoStore.counts, items: s.items }),
         toolbar,
         h(Journal, {
