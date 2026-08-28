@@ -17,6 +17,7 @@
 
 * [How It Works](concepts/how-it-works.md)
 * [Memory Scopes](concepts/memory-scopes.md)
+* [Skills vs Memories](concepts/skills-vs-memories.md)
 * [Batch Distillation](concepts/batch-distillation.md)
 * [Workspace Import](concepts/workspace-import.md)
 

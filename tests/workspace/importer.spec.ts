@@ -47,8 +47,8 @@ describe('WorkspaceImporter', () => {
     writeFileSync(join(cwd, '.codex/instructions.md'), 'Use pnpm')
     mkdirSync(join(cwd, '.copilot/instructions'), { recursive: true })
     writeFileSync(join(cwd, '.copilot/instructions/coding.md'), 'Prefer zod')
-    mkdirSync(join(cwd, '.paper/agents/skills/review'), { recursive: true })
-    writeFileSync(join(cwd, '.paper/agents/skills/review/SKILL.md'), '# Review\n\nCheck types')
+    mkdirSync(join(cwd, '.paper/skills/review'), { recursive: true })
+    writeFileSync(join(cwd, '.paper/skills/review/SKILL.md'), '# Review\n\nCheck types')
     writeFileSync(join(cwd, '.paper/AGENT_MEMORY.md'), 'Team uses squash merges')
     writeFileSync(join(cwd, 'notes.txt'), 'not markdown')
 
@@ -71,7 +71,7 @@ describe('WorkspaceImporter', () => {
       expect(byTitle.get('.codex/instructions.md')?.kind).toBe('constraint')
       expect(byTitle.get('.copilot/instructions/coding.md')?.kind).toBe('constraint')
       expect(byTitle.get('.paper/AGENT_MEMORY.md')?.kind).toBe('fact')
-      expect(byTitle.get('.paper/agents/skills/review/SKILL.md')?.kind).toBe('skill')
+      expect(byTitle.get('.paper/skills/review/SKILL.md')?.kind).toBe('skill')
     } finally {
       close()
     }

@@ -22,6 +22,64 @@ export const memoryScopeSchema: z.ZodType<MemoryScope> = z.lazy(() => z.object({
 export const memoryKindSchema = z.enum(['fact', 'preference', 'constraint', 'procedure', 'skill'])
 export type MemoryKind = z.infer<typeof memoryKindSchema>
 
+// ── Skill types ───────────────────────────────────────────────────────────────
+
+/** Kebab-case skill name regex (e.g. "git-commit-workflow"). */
+export const skillNameSchema = z.string().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'skill name must be kebab-case')
+
+/** The five canonical sections of a SKILL.md body. */
+export const skillBodySchema = z.object({
+  purpose: z.string().min(1).max(500),
+  trigger: z.string().min(1).max(1000),
+  steps: z.string().min(1).max(4000),
+  check: z.string().min(1).max(500),
+  reflex: z.string().max(500).optional(),
+})
+export type SkillBody = z.infer<typeof skillBodySchema>
+
+export const skillSourceSchema = z.object({
+  runtime: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  turn: z.number().int().nonnegative().optional(),
+})
+export type SkillSource = z.infer<typeof skillSourceSchema>
+
+export const skillItemSchema = z.object({
+  name: skillNameSchema,
+  scope: memoryScopeSchema,
+  body: skillBodySchema,
+  usageCount: z.number().int().nonnegative().default(0),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  source: skillSourceSchema.optional(),
+})
+export type SkillItem = z.infer<typeof skillItemSchema>
+
+export const skillLessonSchema = z.object({
+  text: z.string().min(1).max(500),
+  sessionId: z.string().min(1).optional(),
+  turn: z.number().int().nonnegative().optional(),
+  createdAt: z.number().int().nonnegative(),
+})
+export type SkillLesson = z.infer<typeof skillLessonSchema>
+
+/** A skill candidate emitted by the reflector. */
+export type SkillCandidate = {
+  name: string
+  body: SkillBody
+}
+
+export type SkillQuery = {
+  scopes?: MemoryScope[]
+  text?: string
+  limit?: number
+}
+
+export type SkillDelta = {
+  created: SkillItem | null
+  updated: SkillItem | null
+}
+
 export const memorySourceSchema = z.object({
   runtime: z.string().min(1),
   sessionId: z.string().min(1).optional(),

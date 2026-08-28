@@ -6,6 +6,7 @@ export * from './core/prompt.js'
 export * from './config/paths.js'
 export * from './storage/sqlite-store.js'
 export * from './workspace/importer.js'
+export * from './workspace/skill-materializer.js'
 export { EvoCordisService } from './cordis/service.js'
 
 /**

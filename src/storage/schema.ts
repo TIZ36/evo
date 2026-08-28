@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -33,4 +33,33 @@ CREATE TABLE IF NOT EXISTS memory_events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS memory_events_created ON memory_events(id DESC);
+
+-- Skills are procedural SOPs, stored separately from declarative memories.
+-- Keyed by (scope_key, name) — at most one skill per name per scope.
+CREATE TABLE IF NOT EXISTS skills (
+  scope_key TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  name TEXT NOT NULL,
+  body_json TEXT NOT NULL,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  source_json TEXT,
+  PRIMARY KEY (scope_key, name)
+);
+CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);
+CREATE INDEX IF NOT EXISTS skills_rank ON skills(usage_count DESC, updated_at DESC);
+
+-- Skill lessons: per-skill, per-use feedback appended over time.
+CREATE TABLE IF NOT EXISTS skill_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_key TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  session_id TEXT,
+  turn INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (scope_key, skill_name) REFERENCES skills(scope_key, name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS skill_lessons_skill ON skill_lessons(scope_key, skill_name);
 `

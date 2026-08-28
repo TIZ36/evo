@@ -238,7 +238,8 @@ async function runDetachedFlush(payloadPath: string, config: HookConfig): Promis
       /* One batch failing must not strand the rest: they are already out of the
          queue, so a thrown error here would lose those turns for good. */
       try {
-        const delta = await service.reflectBatch(batchTurns(batch))
+        const result = await service.reflectBatch(batchTurns(batch))
+        const delta = result.memories
         total.created.push(...delta.created); total.updated.push(...delta.updated); total.deleted.push(...delta.deleted)
         if (config.debug) log(`reflect ok host=${batch.host} turns=${batch.turns.length} created=${delta.created.length} updated=${delta.updated.length} evicted=${delta.deleted.length}`)
       } catch (error) {

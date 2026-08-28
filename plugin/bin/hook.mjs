@@ -4063,6 +4063,36 @@ const memoryKindSchema = _enum([
 	"procedure",
 	"skill"
 ]);
+/** Kebab-case skill name regex (e.g. "git-commit-workflow"). */
+const skillNameSchema = string().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "skill name must be kebab-case");
+/** The five canonical sections of a SKILL.md body. */
+const skillBodySchema = object({
+	purpose: string().min(1).max(500),
+	trigger: string().min(1).max(1e3),
+	steps: string().min(1).max(4e3),
+	check: string().min(1).max(500),
+	reflex: string().max(500).optional()
+});
+const skillSourceSchema = object({
+	runtime: string().min(1),
+	sessionId: string().min(1).optional(),
+	turn: number().int().nonnegative().optional()
+});
+const skillItemSchema = object({
+	name: skillNameSchema,
+	scope: memoryScopeSchema,
+	body: skillBodySchema,
+	usageCount: number().int().nonnegative().default(0),
+	createdAt: number().int().nonnegative(),
+	updatedAt: number().int().nonnegative(),
+	source: skillSourceSchema.optional()
+});
+object({
+	text: string().min(1).max(500),
+	sessionId: string().min(1).optional(),
+	turn: number().int().nonnegative().optional(),
+	createdAt: number().int().nonnegative()
+});
 const memorySourceSchema = object({
 	runtime: string().min(1),
 	sessionId: string().min(1).optional(),
@@ -4120,16 +4150,35 @@ function balancedJson(text) {
 }
 //#endregion
 //#region src/core/prompt.ts
-function renderMemoryContext(items, maxChars = 6e3) {
-	if (!items.length || maxChars <= 0) return "";
-	const head = "# Relevant memory\n";
-	let output = head;
-	for (const item of items) {
-		const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`;
-		if (output.length + line.length > maxChars) break;
-		output += line;
+/**
+* Render recalled memories and skill catalog into model context.
+*
+* Memories are rendered inline. Skills are listed as catalog entries only —
+* the model can Read the SKILL.md if needed, keeping context small.
+*/
+function renderMemoryContext(items, skills = [], maxChars = 6e3) {
+	if (!items.length && !skills.length || maxChars <= 0) return "";
+	let output = "";
+	if (items.length) {
+		output = "# Relevant memory\n";
+		for (const item of items) {
+			const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`;
+			if (output.length + line.length > maxChars) break;
+			output += line;
+		}
 	}
-	return output === head ? "" : output.trimEnd();
+	if (skills.length && output.length < maxChars) {
+		const skillHead = output ? "\n# Available skills (Read SKILL.md on use)\n" : "# Available skills (Read SKILL.md on use)\n";
+		if (output.length + skillHead.length < maxChars) {
+			output += skillHead;
+			for (const skill of skills) {
+				const line = `- **${skill.name}**: ${skill.trigger} → \`${skill.path}\`\n`;
+				if (output.length + line.length > maxChars) break;
+				output += line;
+			}
+		}
+	}
+	return output.trimEnd();
 }
 /** Memories a batch may produce, scaled to its size: one turn rarely earns more than one. */
 function reflectionCap(turns, ceiling = 4) {
@@ -4140,48 +4189,90 @@ function reflectionCap(turns, ceiling = 4) {
 * batch makes obvious — the pit stepped into three times, the path that only
 * looks like a procedure once it repeats — and pays a model call per turn to
 * miss it.
+*
+* The reflector may return one skill in addition to memories. A skill is a
+* procedural SOP — a reusable multi-step operation — worth materializing as
+* a file-backed asset. Skills are rare: most batches produce only memories.
 */
 function reflectionPrompt(turns, context) {
 	const body = turns.map((turn, index) => `--- turn ${index + 1} ---\nUser:\n${turn.user}\n\nAssistant:\n${turn.assistant}\n\nTools: ${(turn.tools ?? []).join(", ")}`).join("\n\n");
 	const known = context.existing.length ? `\n\nMemory titles already stored in this scope. Reuse a title verbatim to correct or extend that memory; list a title under "evict" only when these turns prove it wrong. Never restate one under a new title:\n${context.existing.map((title) => `- ${title}`).join("\n")}` : "";
+	const knownSkills = context.existingSkills.length ? `\n\nSkills already stored in this scope. Reuse a name verbatim to update that skill:\n${context.existingSkills.map((name) => `- ${name}`).join("\n")}` : "";
 	return `Extract only durable, reusable memory from these ${turns.length} completed agent turn(s). Do not save transient task state, guesses, secrets, credentials, or raw logs.
 
 Prefer what recurs across turns: a pit stepped into more than once, a convention confirmed again, an operating path that took shape. One-off details of a single task are not durable, however true they are — a topic merely explained at length is not durable either.
 
 Return at most ${context.cap} memories, and prefer fewer. Return an empty memories array when nothing is durable; that is the normal outcome for an ordinary turn.
 
-Return JSON only: {"memories":[{"kind":"fact|preference|constraint|procedure|skill","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"]}${known}
+## Skills
+
+In addition to memories, you may return ONE skill (or null) when the batch reveals a reusable multi-step procedure worth saving as an SOP. A skill is rarer than a memory — most batches produce none.
+
+A skill has:
+- \`name\`: kebab-case identifier (e.g. "git-commit-workflow", "run-tests-with-coverage")
+- \`body\`: an object with five sections:
+  - \`purpose\`: what this skill accomplishes (1-2 sentences)
+  - \`trigger\`: when to use it, including explicit "don't use when..." lines
+  - \`steps\`: anchored step-by-step instructions (numbered, concrete)
+  - \`check\`: falsifiable verification — how to know it worked
+  - \`reflex\`: (optional) automatic response pattern if any
+
+Return skill only when the batch shows a procedure that:
+1. Spans multiple steps or tools
+2. Would benefit from explicit documentation
+3. Is likely to recur in future work
+
+Return JSON only:
+{"memories":[{"kind":"fact|preference|constraint|procedure","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"],"skill":null}
+
+or with a skill:
+{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}
 
 ${body}`;
 }
 function consolidationPrompt(items) {
 	return `Consolidate these memories. Merge duplicates, resolve contradictions in favor of newer and higher-confidence evidence, and preserve distinct durable facts. Never invent information. Return JSON only with the same {"memories":[...]} shape.\n\n${JSON.stringify(items)}`;
 }
+const candidateSchema = object({
+	kind: _enum([
+		"fact",
+		"preference",
+		"constraint",
+		"procedure"
+	]),
+	title: string().min(1).max(120),
+	content: string().min(1).max(4e3),
+	scope: memoryScopeSchema.optional(),
+	tags: array(string().min(1)).max(20).optional(),
+	confidence: number().min(0).max(1).optional()
+});
+const skillCandidateSchema = object({
+	name: skillNameSchema,
+	body: skillBodySchema
+}).nullable();
 const responseSchema = object({
-	memories: array(object({
-		kind: memoryKindSchema,
-		title: string().min(1).max(120),
-		content: string().min(1).max(4e3),
-		scope: memoryScopeSchema.optional(),
-		tags: array(string().min(1)).max(20).optional(),
-		confidence: number().min(0).max(1).optional()
-	})).max(100),
+	memories: array(candidateSchema).max(100),
 	/** Titles the batch disproved. Absent from older reflectors, so it stays optional. */
-	evict: array(string().min(1)).max(100).optional()
+	evict: array(string().min(1)).max(100).optional(),
+	/** One skill (or null) the batch may emit. */
+	skill: skillCandidateSchema.optional()
 });
 /** Memories evo distilled itself — the only ones it may deduplicate against or evict.
 `evo-memory` is the name it wrote under before the package was renamed; stores
 predating the rename still hold those rows, and they are just as much its own. */
 const OWN_RUNTIMES = /* @__PURE__ */ new Set(["evo", "evo-memory"]);
 const isOwn = (item) => OWN_RUNTIMES.has(item.source?.runtime ?? "");
+const isOwnSkill = (item) => OWN_RUNTIMES.has(item.source?.runtime ?? "");
 var EvoService = class {
 	store;
+	skillStore;
 	model;
 	events;
 	now;
 	id;
 	constructor(options) {
 		this.store = options.store;
+		this.skillStore = options.skillStore;
 		this.model = options.model;
 		this.events = options.events ?? noopEventSink;
 		this.now = options.now ?? Date.now;
@@ -4218,8 +4309,26 @@ var EvoService = class {
 			if (this.model === model) this.model = previous;
 		};
 	}
+	/**
+	* Build the recalled context for model injection.
+	*
+	* Memories are rendered inline. Skills are listed as catalog entries (name +
+	* trigger + path) — the model can Read the SKILL.md if needed.
+	*/
 	async context(query = {}) {
-		return renderMemoryContext(await this.recall(query), query.maxChars);
+		const memories = await this.recall(query);
+		const skillEntries = [];
+		if (this.skillStore && query.scopes?.length) {
+			const skillQuery = { scopes: query.scopes };
+			if (query.limit !== void 0) skillQuery.limit = query.limit;
+			const skills = await this.skillStore.listSkills(skillQuery);
+			for (const skill of skills) skillEntries.push({
+				name: skill.name,
+				trigger: extractTriggerSummary(skill.body.trigger),
+				path: query.skillRoot ? `${query.skillRoot}/${skill.name}` : `.paper/agents/skills/${skill.name}`
+			});
+		}
+		return renderMemoryContext(memories, skillEntries, query.maxChars);
 	}
 	async forget(id) {
 		await this.store.delete(id);
@@ -4230,7 +4339,7 @@ var EvoService = class {
 	}
 	/** One turn is a batch of one; the distilling rules are the same either way. */
 	async reflect(turn, signal) {
-		return this.reflectBatch([turn], signal);
+		return (await this.reflectBatch([turn], signal)).memories;
 	}
 	/**
 	* Distil a batch of turns in a single model call.
@@ -4243,15 +4352,25 @@ var EvoService = class {
 	* Only memories evo itself distilled take part. Imported workspace files are
 	* a projection of what is on disk — evo neither deduplicates against them nor
 	* lets a model evict them, or one reflection could delete the user's rules.
+	*
+	* Returns both memory delta and skill delta. A skill is emitted at most once
+	* per batch — it is a rarer asset than a memory.
 	*/
 	async reflectBatch(turns, signal) {
-		const delta = {
+		const memoryDelta = {
 			created: [],
 			updated: [],
 			deleted: []
 		};
+		const skillDelta = {
+			created: null,
+			updated: null
+		};
 		const first = turns[0];
-		if (!first) return delta;
+		if (!first) return {
+			memories: memoryDelta,
+			skill: skillDelta
+		};
 		const model = this.requireModel();
 		const scope = first.scope;
 		const existing = await this.store.list({
@@ -4259,9 +4378,14 @@ var EvoService = class {
 			limit: 1e3
 		});
 		const own = existing.filter(isOwn);
+		const existingSkills = this.skillStore ? (await this.skillStore.listSkills({
+			scopes: [scope],
+			limit: 1e3
+		})).filter(isOwnSkill) : [];
 		const prompt = reflectionPrompt(turns, {
 			cap: reflectionCap(turns.length),
-			existing: own.map((item) => item.title)
+			existing: own.map((item) => item.title),
+			existingSkills: existingSkills.map((item) => item.name)
 		});
 		const parsed = responseSchema.parse(parseModelJson(await model.complete({
 			purpose: "reflect",
@@ -4289,7 +4413,7 @@ var EvoService = class {
 					...candidate.confidence === void 0 ? {} : { confidence: candidate.confidence }
 				};
 				await this.store.put(item);
-				delta.updated.push(item);
+				memoryDelta.updated.push(item);
 				await this.events.emit({
 					type: "memory.updated",
 					item
@@ -4305,21 +4429,90 @@ var EvoService = class {
 				});
 				item.source = source;
 				await this.store.put(item);
-				delta.created.push(item);
+				memoryDelta.created.push(item);
 			}
 		}
 		for (const title of parsed.evict ?? []) {
 			const doomed = own.find((item) => item.title.toLocaleLowerCase() === title.trim().toLocaleLowerCase());
-			if (!doomed || delta.updated.some((item) => item.id === doomed.id) || delta.created.some((item) => item.id === doomed.id)) continue;
+			if (!doomed || memoryDelta.updated.some((item) => item.id === doomed.id) || memoryDelta.created.some((item) => item.id === doomed.id)) continue;
 			await this.forget(doomed.id);
-			delta.deleted.push(doomed.id);
+			memoryDelta.deleted.push(doomed.id);
+		}
+		if (parsed.skill && this.skillStore) {
+			const now = this.now();
+			const oldSkill = existingSkills.find((item) => item.name === parsed.skill.name);
+			if (oldSkill) {
+				const item = {
+					...oldSkill,
+					body: parsed.skill.body,
+					updatedAt: now,
+					source
+				};
+				await this.skillStore.putSkill(item);
+				skillDelta.updated = item;
+				await this.events.emit({
+					type: "skill.updated",
+					skill: item
+				});
+			} else {
+				const item = {
+					name: parsed.skill.name,
+					scope,
+					body: parsed.skill.body,
+					usageCount: 0,
+					createdAt: now,
+					updatedAt: now,
+					source
+				};
+				await this.skillStore.putSkill(item);
+				skillDelta.created = item;
+				await this.events.emit({
+					type: "skill.created",
+					skill: item
+				});
+			}
 		}
 		await this.events.emit({
 			type: "memory.reflected",
 			turn: last,
-			delta
+			delta: memoryDelta
 		});
-		return delta;
+		return {
+			memories: memoryDelta,
+			skill: skillDelta
+		};
+	}
+	/** List skills in the given scopes. */
+	async listSkills(query = {}) {
+		if (!this.skillStore) return [];
+		return this.skillStore.listSkills(query);
+	}
+	/** Record that a skill was used, optionally adding a lesson. */
+	async useSkill(scope, name, lesson) {
+		if (!this.skillStore) return;
+		await this.skillStore.incrementUsage(scope, name);
+		if (lesson) {
+			const lessonItem = {
+				text: lesson.trim(),
+				createdAt: this.now()
+			};
+			await this.skillStore.addLesson(scope, name, lessonItem);
+			await this.events.emit({
+				type: "skill.used",
+				scope,
+				name,
+				lesson
+			});
+		} else await this.events.emit({
+			type: "skill.used",
+			scope,
+			name
+		});
+	}
+	/** Get lessons for a skill. */
+	async getLessons(scope, name) {
+		if (!this.skillStore) return [];
+		return this.skillStore.getLessons(scope, name);
 	}
 	async consolidate(scope, signal) {
 		const before = await this.store.list({
@@ -4368,13 +4561,18 @@ var EvoService = class {
 		return this.model;
 	}
 };
+function extractTriggerSummary(trigger, maxLen = 80) {
+	const cleaned = (trigger.split("\n")[0] ?? trigger).replace(/^[-*]\s*/, "").trim();
+	if (cleaned.length <= maxLen) return cleaned;
+	return `${cleaned.slice(0, maxLen - 3)}...`;
+}
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 );
 INSERT INTO schema_meta(version)
-SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 2 WHERE version < 2;
+SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 3 WHERE version < 3;
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -4401,6 +4599,35 @@ CREATE TABLE IF NOT EXISTS memory_events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS memory_events_created ON memory_events(id DESC);
+
+-- Skills are procedural SOPs, stored separately from declarative memories.
+-- Keyed by (scope_key, name) — at most one skill per name per scope.
+CREATE TABLE IF NOT EXISTS skills (
+  scope_key TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  name TEXT NOT NULL,
+  body_json TEXT NOT NULL,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  source_json TEXT,
+  PRIMARY KEY (scope_key, name)
+);
+CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);
+CREATE INDEX IF NOT EXISTS skills_rank ON skills(usage_count DESC, updated_at DESC);
+
+-- Skill lessons: per-skill, per-use feedback appended over time.
+CREATE TABLE IF NOT EXISTS skill_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_key TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  session_id TEXT,
+  turn INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (scope_key, skill_name) REFERENCES skills(scope_key, name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS skill_lessons_skill ON skill_lessons(scope_key, skill_name);
 `;
 //#endregion
 //#region src/storage/sqlite-store.ts
@@ -4414,7 +4641,7 @@ var SqliteMemoryStore = class {
 		this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
 		this.db.exec(SCHEMA_SQL);
 		const version = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-		if (Number(version?.version) !== 2) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+		if (Number(version?.version) !== 3) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
 	}
 	async get(id) {
 		const row = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
@@ -4473,7 +4700,27 @@ var SqliteMemoryStore = class {
 	}
 	/** Persist one memory event for the activity log (panel / API consumers). */
 	async emit(event) {
-		const scope = event.type === "memory.deleted" ? void 0 : event.type === "memory.consolidated" ? event.scope : event.type === "memory.reflected" ? event.turn.scope : event.item.scope;
+		let scope;
+		switch (event.type) {
+			case "memory.deleted":
+				scope = void 0;
+				break;
+			case "memory.consolidated":
+				scope = event.scope;
+				break;
+			case "memory.reflected":
+				scope = event.turn.scope;
+				break;
+			case "skill.created":
+			case "skill.updated":
+				scope = event.skill.scope;
+				break;
+			case "skill.deleted":
+			case "skill.used":
+				scope = event.scope;
+				break;
+			default: scope = event.item.scope;
+		}
 		this.db.prepare("INSERT INTO memory_events (type, scope_json, payload_json, created_at) VALUES (?, ?, ?, ?)").run(event.type, scope ? JSON.stringify(scope) : null, JSON.stringify(event), Date.now());
 	}
 	/** Most recent events, newest first. */
@@ -4489,6 +4736,52 @@ var SqliteMemoryStore = class {
 	async countByScopeKey() {
 		const rows = this.db.prepare("SELECT scope_key, COUNT(*) AS count FROM memories GROUP BY scope_key").all();
 		return new Map(rows.map((row) => [String(row.scope_key), Number(row.count)]));
+	}
+	async getSkill(scope, name) {
+		const row = this.db.prepare("SELECT * FROM skills WHERE scope_key = ? AND name = ?").get(scopeKey(scope), name);
+		return row ? decodeSkill(row) : null;
+	}
+	async listSkills(query = {}) {
+		const where = [];
+		const params = [];
+		if (query.scopes?.length) {
+			where.push(`scope_key IN (${query.scopes.map(() => "?").join(",")})`);
+			params.push(...query.scopes.map(scopeKey));
+		}
+		if (query.text?.trim()) {
+			where.push("(name LIKE ? ESCAPE '\\' OR body_json LIKE ? ESCAPE '\\')");
+			const pattern = `%${escapeLike(query.text.trim())}%`;
+			params.push(pattern, pattern);
+		}
+		const limit = Math.max(1, Math.min(query.limit ?? 100, 1e3));
+		const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY usage_count DESC, updated_at DESC, name ASC LIMIT ?`;
+		return this.db.prepare(sql).all(...params, limit).map(decodeSkill);
+	}
+	async putSkill(item) {
+		const value = skillItemSchema.parse(item);
+		this.db.prepare(`INSERT INTO skills
+      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_key, name) DO UPDATE SET scope_json=excluded.scope_json,
+      body_json=excluded.body_json, usage_count=excluded.usage_count, updated_at=excluded.updated_at,
+      source_json=excluded.source_json`).run(...encodeSkill(value));
+	}
+	async deleteSkill(scope, name) {
+		this.db.prepare("DELETE FROM skills WHERE scope_key = ? AND name = ?").run(scopeKey(scope), name);
+	}
+	async getLessons(scope, name) {
+		return this.db.prepare("SELECT text, session_id, turn, created_at FROM skill_lessons WHERE scope_key = ? AND skill_name = ? ORDER BY created_at ASC").all(scopeKey(scope), name).map((row) => ({
+			text: String(row.text),
+			sessionId: row.session_id ? String(row.session_id) : void 0,
+			turn: row.turn != null ? Number(row.turn) : void 0,
+			createdAt: Number(row.created_at)
+		}));
+	}
+	async addLesson(scope, name, lesson) {
+		this.db.prepare("INSERT INTO skill_lessons (scope_key, skill_name, text, session_id, turn, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(scopeKey(scope), name, lesson.text, lesson.sessionId ?? null, lesson.turn ?? null, lesson.createdAt);
+	}
+	async incrementUsage(scope, name) {
+		this.db.prepare("UPDATE skills SET usage_count = usage_count + 1, updated_at = ? WHERE scope_key = ? AND name = ?").run(Date.now(), scopeKey(scope), name);
 	}
 	close() {
 		this.db.close();
@@ -4527,6 +4820,29 @@ function decode(row) {
 }
 function escapeLike(value) {
 	return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+function encodeSkill(item) {
+	return [
+		scopeKey(item.scope),
+		JSON.stringify(item.scope),
+		item.name,
+		JSON.stringify(item.body),
+		item.usageCount,
+		item.createdAt,
+		item.updatedAt,
+		item.source ? JSON.stringify(item.source) : null
+	];
+}
+function decodeSkill(row) {
+	return skillItemSchema.parse({
+		name: row.name,
+		scope: JSON.parse(String(row.scope_json)),
+		body: skillBodySchema.parse(JSON.parse(String(row.body_json))),
+		usageCount: row.usage_count,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+		source: row.source_json ? JSON.parse(String(row.source_json)) : void 0
+	});
 }
 //#endregion
 //#region src/workspace/importer.ts
@@ -4585,10 +4901,6 @@ const SKILL_BASES = [
 	},
 	{
 		base: ".paper/skills",
-		tool: "paper"
-	},
-	{
-		base: ".paper/agents/skills",
 		tool: "paper"
 	}
 ];
@@ -5431,7 +5743,7 @@ async function runDetachedFlush(payloadPath, config) {
 		for (const batch of payload.batches ?? []) {
 			service.setModelRunner(modelRunner(batch.host, config));
 			try {
-				const delta = await service.reflectBatch(batchTurns(batch));
+				const delta = (await service.reflectBatch(batchTurns(batch))).memories;
 				total.created.push(...delta.created);
 				total.updated.push(...delta.updated);
 				total.deleted.push(...delta.deleted);

@@ -1,4 +1,4 @@
-import type { ConsolidationResult, MemoryDelta, MemoryItem, MemoryQuery, MemoryScope, Turn } from './types.js'
+import type { ConsolidationResult, MemoryDelta, MemoryItem, MemoryQuery, MemoryScope, SkillDelta, SkillItem, SkillLesson, SkillQuery, Turn } from './types.js'
 
 export interface MemoryStore {
   get(id: string): Promise<MemoryItem | null>
@@ -7,6 +7,16 @@ export interface MemoryStore {
   delete(id: string): Promise<void>
   replace(scope: MemoryScope, items: MemoryItem[]): Promise<void>
   close?(): void | Promise<void>
+}
+
+export interface SkillStore {
+  getSkill(scope: MemoryScope, name: string): Promise<SkillItem | null>
+  listSkills(query?: SkillQuery): Promise<SkillItem[]>
+  putSkill(item: SkillItem): Promise<void>
+  deleteSkill(scope: MemoryScope, name: string): Promise<void>
+  getLessons(scope: MemoryScope, name: string): Promise<SkillLesson[]>
+  addLesson(scope: MemoryScope, name: string, lesson: SkillLesson): Promise<void>
+  incrementUsage(scope: MemoryScope, name: string): Promise<void>
 }
 
 export interface ModelRunner {
@@ -22,6 +32,9 @@ export type MemoryEvent =
   | { type: 'memory.deleted'; id: string }
   | { type: 'memory.consolidated'; scope: MemoryScope; result: ConsolidationResult }
   | { type: 'memory.reflected'; turn: Turn; delta: MemoryDelta }
+  | { type: 'skill.created' | 'skill.updated'; skill: SkillItem }
+  | { type: 'skill.deleted'; scope: MemoryScope; name: string }
+  | { type: 'skill.used'; scope: MemoryScope; name: string; lesson?: string }
 
 /** One persisted activity-log row, newest first. */
 export type MemoryEventRecord = {

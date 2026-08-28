@@ -65,9 +65,9 @@ describe('EvoService', () => {
     let id = 0
     const service = new EvoService({ store, now: () => 20, id: () => `m${++id}`, model: runner({ memories: [1, 2, 3, 4, 5].map(n => ({ kind: 'fact', title: `T${n}`, content: `c${n}` })) }) })
     const turns = [1, 2, 3].map(n => ({ sessionId: 's', turn: n, scope, user: `u${n}`, assistant: `a${n}` }))
-    const delta = await service.reflectBatch(turns)
+    const result = await service.reflectBatch(turns)
     /* cap = 1 + floor(3/3) = 2 */
-    expect(delta.created).toHaveLength(2)
+    expect(result.memories.created).toHaveLength(2)
     expect(await store.list()).toHaveLength(2)
   })
 
@@ -77,8 +77,8 @@ describe('EvoService', () => {
     store.rows.set('own', { id: 'own', scope, kind: 'fact', title: 'Stale rule', content: 'v', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo' } })
     store.rows.set('imported', { id: 'imported', scope, kind: 'fact', title: 'CLAUDE.md', content: 'rules', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'workspace-import' } })
 
-    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
-    expect(delta.deleted).toEqual(['own'])
+    const result = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    expect(result.memories.deleted).toEqual(['own'])
     expect((await store.list()).map(item => item.id)).toEqual(['imported'])
   })
 
@@ -88,9 +88,9 @@ describe('EvoService', () => {
     const service = new EvoService({ store, now: () => 20, id: () => 'm1', model: { complete: async request => { seen = request.prompt; return '{"memories":[],"evict":["Legacy rule"]}' } } })
     store.rows.set('legacy', { id: 'legacy', scope, kind: 'fact', title: 'Legacy rule', content: 'v', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo-memory' } })
 
-    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    const result = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
     expect(seen).toContain('Legacy rule')
-    expect(delta.deleted).toEqual(['legacy'])
+    expect(result.memories.deleted).toEqual(['legacy'])
   })
 
   it('keeps a memory the same batch rewrote, treating it as a correction', async () => {
@@ -98,8 +98,8 @@ describe('EvoService', () => {
     const service = new EvoService({ store, now: () => 20, id: () => 'm1', model: runner({ memories: [{ kind: 'fact', title: 'Rule', content: 'new value' }], evict: ['Rule'] }) })
     store.rows.set('own', { id: 'own', scope, kind: 'fact', title: 'Rule', content: 'old value', tags: [], usageCount: 0, createdAt: 1, updatedAt: 1, source: { runtime: 'evo' } })
 
-    const delta = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
-    expect(delta.deleted).toEqual([])
+    const result = await service.reflectBatch([{ sessionId: 's', turn: 1, scope, user: 'u', assistant: 'a' }])
+    expect(result.memories.deleted).toEqual([])
     expect((await store.list())[0]?.content).toBe('new value')
   })
 

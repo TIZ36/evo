@@ -1,14 +1,14 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { MemoryEventSink, MemoryStore } from '../core/contracts.js'
+import type { MemoryEventSink, MemoryStore, SkillStore } from '../core/contracts.js'
 import type { MemoryEvent, MemoryEventRecord } from '../core/contracts.js'
-import { memoryItemSchema, scopeKey, type MemoryItem, type MemoryQuery, type MemoryScope } from '../core/types.js'
+import { memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, type MemoryItem, type MemoryQuery, type MemoryScope, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js'
 
 type Row = Record<string, unknown>
 
-export class SqliteMemoryStore implements MemoryStore, MemoryEventSink {
+export class SqliteMemoryStore implements MemoryStore, SkillStore, MemoryEventSink {
   private readonly db: DatabaseSync
 
   constructor(readonly path: string) {
@@ -84,10 +84,28 @@ export class SqliteMemoryStore implements MemoryStore, MemoryEventSink {
 
   /** Persist one memory event for the activity log (panel / API consumers). */
   async emit(event: MemoryEvent): Promise<void> {
-    const scope = event.type === 'memory.deleted' ? undefined
-      : event.type === 'memory.consolidated' ? event.scope
-        : event.type === 'memory.reflected' ? event.turn.scope
-          : event.item.scope
+    let scope: MemoryScope | undefined
+    switch (event.type) {
+      case 'memory.deleted':
+        scope = undefined
+        break
+      case 'memory.consolidated':
+        scope = event.scope
+        break
+      case 'memory.reflected':
+        scope = event.turn.scope
+        break
+      case 'skill.created':
+      case 'skill.updated':
+        scope = event.skill.scope
+        break
+      case 'skill.deleted':
+      case 'skill.used':
+        scope = event.scope
+        break
+      default:
+        scope = event.item.scope
+    }
     this.db.prepare('INSERT INTO memory_events (type, scope_json, payload_json, created_at) VALUES (?, ?, ?, ?)')
       .run(event.type, scope ? JSON.stringify(scope) : null, JSON.stringify(event), Date.now())
   }
@@ -110,6 +128,65 @@ export class SqliteMemoryStore implements MemoryStore, MemoryEventSink {
     return new Map(rows.map(row => [String(row.scope_key), Number(row.count)]))
   }
 
+  // ── Skill store ─────────────────────────────────────────────────────────────
+
+  async getSkill(scope: MemoryScope, name: string): Promise<SkillItem | null> {
+    const row = this.db.prepare('SELECT * FROM skills WHERE scope_key = ? AND name = ?').get(scopeKey(scope), name) as Row | undefined
+    return row ? decodeSkill(row) : null
+  }
+
+  async listSkills(query: SkillQuery = {}): Promise<SkillItem[]> {
+    const where: string[] = []
+    const params: (string | number)[] = []
+    if (query.scopes?.length) {
+      where.push(`scope_key IN (${query.scopes.map(() => '?').join(',')})`)
+      params.push(...query.scopes.map(scopeKey))
+    }
+    if (query.text?.trim()) {
+      where.push('(name LIKE ? ESCAPE \'\\\' OR body_json LIKE ? ESCAPE \'\\\')')
+      const pattern = `%${escapeLike(query.text.trim())}%`
+      params.push(pattern, pattern)
+    }
+    const limit = Math.max(1, Math.min(query.limit ?? 100, 1000))
+    const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY usage_count DESC, updated_at DESC, name ASC LIMIT ?`
+    return (this.db.prepare(sql).all(...params, limit) as Row[]).map(decodeSkill)
+  }
+
+  async putSkill(item: SkillItem): Promise<void> {
+    const value = skillItemSchema.parse(item)
+    this.db.prepare(`INSERT INTO skills
+      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_key, name) DO UPDATE SET scope_json=excluded.scope_json,
+      body_json=excluded.body_json, usage_count=excluded.usage_count, updated_at=excluded.updated_at,
+      source_json=excluded.source_json`).run(...encodeSkill(value))
+  }
+
+  async deleteSkill(scope: MemoryScope, name: string): Promise<void> {
+    this.db.prepare('DELETE FROM skills WHERE scope_key = ? AND name = ?').run(scopeKey(scope), name)
+  }
+
+  async getLessons(scope: MemoryScope, name: string): Promise<SkillLesson[]> {
+    const rows = this.db.prepare('SELECT text, session_id, turn, created_at FROM skill_lessons WHERE scope_key = ? AND skill_name = ? ORDER BY created_at ASC')
+      .all(scopeKey(scope), name) as Row[]
+    return rows.map(row => ({
+      text: String(row.text),
+      sessionId: row.session_id ? String(row.session_id) : undefined,
+      turn: row.turn != null ? Number(row.turn) : undefined,
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  async addLesson(scope: MemoryScope, name: string, lesson: SkillLesson): Promise<void> {
+    this.db.prepare('INSERT INTO skill_lessons (scope_key, skill_name, text, session_id, turn, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(scopeKey(scope), name, lesson.text, lesson.sessionId ?? null, lesson.turn ?? null, lesson.createdAt)
+  }
+
+  async incrementUsage(scope: MemoryScope, name: string): Promise<void> {
+    this.db.prepare('UPDATE skills SET usage_count = usage_count + 1, updated_at = ? WHERE scope_key = ? AND name = ?')
+      .run(Date.now(), scopeKey(scope), name)
+  }
+
   close(): void { this.db.close() }
 }
 
@@ -129,3 +206,20 @@ function decode(row: Row): MemoryItem {
 }
 
 function escapeLike(value: string) { return value.replace(/[\\%_]/g, match => `\\${match}`) }
+
+function encodeSkill(item: SkillItem) {
+  return [scopeKey(item.scope), JSON.stringify(item.scope), item.name, JSON.stringify(item.body),
+    item.usageCount, item.createdAt, item.updatedAt, item.source ? JSON.stringify(item.source) : null] as const
+}
+
+function decodeSkill(row: Row): SkillItem {
+  return skillItemSchema.parse({
+    name: row.name,
+    scope: JSON.parse(String(row.scope_json)),
+    body: skillBodySchema.parse(JSON.parse(String(row.body_json))),
+    usageCount: row.usage_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    source: row.source_json ? JSON.parse(String(row.source_json)) : undefined,
+  })
+}

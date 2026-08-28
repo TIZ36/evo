@@ -1,15 +1,44 @@
-import type { MemoryItem, Turn } from './types.js'
+import type { MemoryItem, SkillItem, Turn } from './types.js'
 
-export function renderMemoryContext(items: MemoryItem[], maxChars = 6000): string {
-  if (!items.length || maxChars <= 0) return ''
-  const head = '# Relevant memory\n'
-  let output = head
-  for (const item of items) {
-    const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`
-    if (output.length + line.length > maxChars) break
-    output += line
+/** Catalog entry for a skill: name + trigger + path, not the full body. */
+export type SkillCatalogEntry = {
+  name: string
+  trigger: string
+  path: string
+}
+
+/**
+ * Render recalled memories and skill catalog into model context.
+ *
+ * Memories are rendered inline. Skills are listed as catalog entries only —
+ * the model can Read the SKILL.md if needed, keeping context small.
+ */
+export function renderMemoryContext(items: MemoryItem[], skills: SkillCatalogEntry[] = [], maxChars = 6000): string {
+  if ((!items.length && !skills.length) || maxChars <= 0) return ''
+  let output = ''
+
+  if (items.length) {
+    output = '# Relevant memory\n'
+    for (const item of items) {
+      const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`
+      if (output.length + line.length > maxChars) break
+      output += line
+    }
   }
-  return output === head ? '' : output.trimEnd()
+
+  if (skills.length && output.length < maxChars) {
+    const skillHead = output ? '\n# Available skills (Read SKILL.md on use)\n' : '# Available skills (Read SKILL.md on use)\n'
+    if (output.length + skillHead.length < maxChars) {
+      output += skillHead
+      for (const skill of skills) {
+        const line = `- **${skill.name}**: ${skill.trigger} → \`${skill.path}\`\n`
+        if (output.length + line.length > maxChars) break
+        output += line
+      }
+    }
+  }
+
+  return output.trimEnd()
 }
 
 /**
@@ -27,6 +56,8 @@ export type ReflectionContext = {
   cap: number
   /** Titles already stored in this scope, so the model updates instead of duplicating. */
   existing: string[]
+  /** Skills already stored in this scope, so the model updates instead of duplicating. */
+  existingSkills: string[]
 }
 
 /** Memories a batch may produce, scaled to its size: one turn rarely earns more than one. */
@@ -39,6 +70,10 @@ export function reflectionCap(turns: number, ceiling = 4): number {
  * batch makes obvious — the pit stepped into three times, the path that only
  * looks like a procedure once it repeats — and pays a model call per turn to
  * miss it.
+ *
+ * The reflector may return one skill in addition to memories. A skill is a
+ * procedural SOP — a reusable multi-step operation — worth materializing as
+ * a file-backed asset. Skills are rare: most batches produce only memories.
  */
 export function reflectionPrompt(turns: Turn[], context: ReflectionContext): string {
   const body = turns
@@ -47,13 +82,38 @@ export function reflectionPrompt(turns: Turn[], context: ReflectionContext): str
   const known = context.existing.length
     ? `\n\nMemory titles already stored in this scope. Reuse a title verbatim to correct or extend that memory; list a title under "evict" only when these turns prove it wrong. Never restate one under a new title:\n${context.existing.map(title => `- ${title}`).join('\n')}`
     : ''
+  const knownSkills = context.existingSkills.length
+    ? `\n\nSkills already stored in this scope. Reuse a name verbatim to update that skill:\n${context.existingSkills.map(name => `- ${name}`).join('\n')}`
+    : ''
   return `Extract only durable, reusable memory from these ${turns.length} completed agent turn(s). Do not save transient task state, guesses, secrets, credentials, or raw logs.
 
 Prefer what recurs across turns: a pit stepped into more than once, a convention confirmed again, an operating path that took shape. One-off details of a single task are not durable, however true they are — a topic merely explained at length is not durable either.
 
 Return at most ${context.cap} memories, and prefer fewer. Return an empty memories array when nothing is durable; that is the normal outcome for an ordinary turn.
 
-Return JSON only: {"memories":[{"kind":"fact|preference|constraint|procedure|skill","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"]}${known}
+## Skills
+
+In addition to memories, you may return ONE skill (or null) when the batch reveals a reusable multi-step procedure worth saving as an SOP. A skill is rarer than a memory — most batches produce none.
+
+A skill has:
+- \`name\`: kebab-case identifier (e.g. "git-commit-workflow", "run-tests-with-coverage")
+- \`body\`: an object with five sections:
+  - \`purpose\`: what this skill accomplishes (1-2 sentences)
+  - \`trigger\`: when to use it, including explicit "don't use when..." lines
+  - \`steps\`: anchored step-by-step instructions (numbered, concrete)
+  - \`check\`: falsifiable verification — how to know it worked
+  - \`reflex\`: (optional) automatic response pattern if any
+
+Return skill only when the batch shows a procedure that:
+1. Spans multiple steps or tools
+2. Would benefit from explicit documentation
+3. Is likely to recur in future work
+
+Return JSON only:
+{"memories":[{"kind":"fact|preference|constraint|procedure","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"],"skill":null}
+
+or with a skill:
+{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}
 
 ${body}`
 }
