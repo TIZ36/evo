@@ -187,6 +187,56 @@ describe('evo HTTP API', () => {
     }
   })
 
+  it('skills endpoint returns shape expected by panel (name, trigger, path, usageCount, dormant, promoted, scope)', async () => {
+    const { fiber, svc } = await service()
+    try {
+      svc.setModelRunner({
+        complete: async () => JSON.stringify({
+          memories: [],
+          skill: {
+            name: 'panel-test-skill',
+            body: {
+              purpose: 'Panel verification',
+              trigger: 'When verifying panel integration\n- Additional trigger detail',
+              steps: '1. Step one\n2. Step two',
+              check: 'Panel shows all fields',
+            },
+          },
+        }),
+      })
+
+      await svc.core.reflectBatch([
+        { sessionId: 's', turn: 1, scope: { type: 'project', id: '/test' }, user: 'create skill', assistant: 'done' },
+      ])
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=%2Ftest`)
+      expect(response.status).toBe(200)
+      const { skills } = response.json as { skills: Array<{
+        name: string
+        trigger: string
+        path: string
+        usageCount: number
+        dormant: boolean
+        promoted: boolean
+        scope: { type: string; id?: string }
+      }> }
+      expect(skills).toHaveLength(1)
+      const skill = skills[0]!
+      expect(skill.name).toBe('panel-test-skill')
+      expect(skill.trigger).toBe('When verifying panel integration')
+      expect(skill.path).toBe('.paper/agents/skills/panel-test-skill')
+      expect(typeof skill.usageCount).toBe('number')
+      expect(skill.usageCount).toBe(0)
+      expect(typeof skill.dormant).toBe('boolean')
+      expect(skill.dormant).toBe(false)
+      expect(typeof skill.promoted).toBe('boolean')
+      expect(skill.promoted).toBe(false)
+      expect(skill.scope).toMatchObject({ type: 'project', id: '/test' })
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
   it('returns backlog info via /backlog endpoint', async () => {
     const { fiber, svc } = await service()
     try {

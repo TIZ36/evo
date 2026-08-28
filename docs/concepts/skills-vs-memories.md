@@ -48,7 +48,19 @@ Every skill has five sections:
 | **Check** | Falsifiable verification — how to know it worked |
 | **Reflex** | (Optional) Automatic response pattern |
 
-### Skill recall
+### Viewing skills in the Memory panel
+
+The Memory panel (Settings → Memory) includes a **Skills** tab that lists all skills with:
+
+- **Name**: the kebab-case skill identifier
+- **Trigger**: a one-line summary of when to use the skill
+- **Uses**: how many times the skill has been applied
+- **Promoted/Dormant**: status badges for mature or unused skills
+- **Path**: the SKILL.md file location
+
+This lets you browse the skill catalog without inspecting the filesystem.
+
+## Skill recall
 
 Skills are recalled as catalog entries, not the full body:
 
