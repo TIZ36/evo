@@ -25,10 +25,11 @@ The result: your agent becomes an experienced colleague who remembers the projec
 
 ## Documentation
 
-📖 **Full documentation is available in the [docs/](docs/README.md) directory.**
+📖 **Full documentation**: https://evo-5.gitbook.io/evo/
 
 | Section | Description |
 | --- | --- |
+| [GitBook Docs](https://evo-5.gitbook.io/evo/) | Primary documentation site |
 | [Getting Started](docs/getting-started/requirements.md) | Requirements and installation |
 | [Host Integrations](docs/hosts/deepseek-harness.md) | DeepSeek Harness, Claude Code, Codex |
 | [Concepts](docs/concepts/how-it-works.md) | How recall + reflect works |
@@ -61,6 +62,7 @@ codex plugin add evo@evo
 ## Key Features
 
 - **Structured memory**: Every item has a scope, kind (fact, constraint, procedure, skill…), tags, and source
+- **First-class skills**: Procedural SOPs separate from declarative memories, with lessons learned tracking and a dedicated Skills tab in the Memory panel
 - **Batch distillation**: Turns are collected and distilled in batches for better memory quality
 - **Local by default**: SQLite storage via Node's built-in `node:sqlite` — nothing leaves the machine except reflection model calls
 - **Workspace import**: Existing `CLAUDE.md`, `AGENTS.md`, `.codex/`, and similar files are imported automatically
@@ -68,12 +70,12 @@ codex plugin add evo@evo
 
 ## Status
 
-evo is currently **alpha (0.2.x)**. The core loop is stable and used daily, but APIs may change.
+evo is currently **alpha (0.3.x)**. The core loop is stable and used daily, but APIs may change.
 
 ### Current Limitations
 
 - Recall uses deterministic SQLite filtering and ranking, without embeddings
-- Consolidation is not scheduled automatically; call `consolidate()` explicitly or use the web panel
+- Consolidation runs automatically on the slow path (floor 24h / 72h converged, or large replay buffer); call `consolidate()` or use the web panel for manual runs
 - `node:sqlite` is still marked experimental by current Node releases (it ships with Node 22+)
 
 ## Development

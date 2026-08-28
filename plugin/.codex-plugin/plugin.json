@@ -1,6 +1,6 @@
 {
   "name": "evo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Evolving memory for agents: recall before the model thinks, reflect after it answers.",
   "homepage": "https://github.com/TIZ36/evo",
   "repository": "https://github.com/TIZ36/evo",
