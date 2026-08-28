@@ -19,6 +19,8 @@
 * [Memory Scopes](concepts/memory-scopes.md)
 * [Skills vs Memories](concepts/skills-vs-memories.md)
 * [Batch Distillation](concepts/batch-distillation.md)
+* [Consolidation](concepts/consolidation.md)
+* [Retention](concepts/retention.md)
 * [Workspace Import](concepts/workspace-import.md)
 
 ## Configuration

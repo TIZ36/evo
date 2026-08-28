@@ -145,6 +145,47 @@ When an agent uses a skill:
 
 Call `useSkill(scope, name, lesson?)` to track usage programmatically.
 
+## Skill polish
+
+Skills improve over time through **polish** — folding accumulated lessons into the skill body. Polish happens when:
+
+- A skill has accumulated 3+ unfolded lessons
+- A form check suggests the skill needs improvement
+
+### Polish guards
+
+To prevent runaway growth, polish is rejected when:
+
+- Step count grows by more than 50%
+- Absolute paths are introduced (use `~/` or relative paths)
+- Reflex section exceeds 500 characters
+
+If a polished draft fails these guards, the original SKILL.md is preserved.
+
+### L1 form check
+
+Every skill must pass the L1 form check:
+
+| Check | Requirement |
+| --- | --- |
+| Name | kebab-case (`deploy-workflow`, not `DeployWorkflow`) |
+| Purpose | 10-500 characters, clear objective |
+| Trigger | 10+ characters, includes "don't use when..." |
+| Steps | At least 2 numbered/bulleted items |
+| Check | 10+ characters, falsifiable verification |
+| Reflex | Optional, max 500 characters |
+
+## Dormancy
+
+Skills that go unused become **dormant**:
+
+- **Threshold**: 0 uses and 21+ days since last update
+- **Dormant skills**: Still listed in catalog, but without description
+- **Wake on use**: Using a dormant skill wakes it (increments usage, clears dormancy)
+- **No capacity eviction**: Skills are never deleted due to store cap (unlike memories)
+
+Dormancy keeps rarely-used skills available without cluttering active recall.
+
 ## Configuration
 
 Skills follow the same recall limits as memories:
