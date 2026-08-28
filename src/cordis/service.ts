@@ -4,30 +4,17 @@ import type { MemoryEventRecord, ModelRunner } from '../core/contracts.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter, type WorkspaceImportResult } from '../workspace/importer.js'
+import { SkillHydrator, type SkillHydrateResult } from '../workspace/skill-hydrator.js'
 import { buildScopeTree, type ScopeTreeNode } from '../core/scope-tree.js'
 import { resolveDataPaths } from '../config/paths.js'
 import type { Config } from './config.js'
+import { discoverGlobalSkillFiles, discoverSkillFiles, memoryItemToSummary, skillItemToSummary, type SkillSummary } from '../workspace/skill-discovery.js'
 
-export type SkillSummary = {
-  name: string
-  trigger: string
-  path: string
-  usageCount: number
-  dormant: boolean
-  promoted: boolean
-  scope: MemoryScope
-}
+export type { SkillSummary } from '../workspace/skill-discovery.js'
 
 export type BacklogInfo = {
   replaySize: number
   scope: MemoryScope
-}
-
-function extractTriggerSummary(trigger: string, maxLen = 80): string {
-  const firstLine = trigger.split('\n')[0] ?? trigger
-  const cleaned = firstLine.replace(/^[-*]\s*/, '').trim()
-  if (cleaned.length <= maxLen) return cleaned
-  return `${cleaned.slice(0, maxLen - 3)}...`
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -46,6 +33,7 @@ export class EvoCordisService extends Service {
   readonly databasePath: string
   private readonly store: SqliteMemoryStore
   private workspace: WorkspaceImporter | undefined
+  private skillHydrator: SkillHydrator | undefined
   private busyCount = 0
 
   constructor(ctx: Context, config: Config = {}) {
@@ -64,25 +52,86 @@ export class EvoCordisService extends Service {
   reflect(turn: Turn, signal?: AbortSignal) { return this.tracked(() => this.core.reflect(turn, signal)) }
   consolidate(scope: MemoryScope, signal?: AbortSignal) { return this.tracked(() => this.core.consolidate(scope, signal)) }
   setModelRunner(model: ModelRunner) { return this.core.setModelRunner(model) }
-  importWorkspace(cwd: string, options?: { force?: boolean }): Promise<WorkspaceImportResult> {
+  async importWorkspace(cwd: string, options?: { force?: boolean }): Promise<WorkspaceImportResult & { skills?: SkillHydrateResult }> {
     this.workspace ??= new WorkspaceImporter(this.core.store)
-    return this.tracked(() => this.workspace!.import(cwd, options))
+    this.skillHydrator ??= new SkillHydrator(this.store)
+    return this.tracked(async () => {
+      const result = await this.workspace!.import(cwd, options)
+      const skills = await this.skillHydrator!.hydrateProject(cwd, options)
+      return { ...result, skills }
+    })
+  }
+
+  /**
+   * Hydrate global skills from $HOME directories into the skills table.
+   */
+  async hydrateGlobalSkills(options?: { force?: boolean }): Promise<SkillHydrateResult> {
+    this.skillHydrator ??= new SkillHydrator(this.store)
+    return this.tracked(() => this.skillHydrator!.hydrateGlobal(options))
   }
   events(limit = 50): Promise<MemoryEventRecord[]> { return this.store.listEvents(limit) }
   async scopes(): Promise<ScopeTreeNode[]> { return buildScopeTree(await this.store.countByScopeKey()) }
   status(): MemoryStatus { return { ok: true, databasePath: this.databasePath, busy: this.busyCount > 0 } }
 
-  async skills(query: SkillQuery = {}): Promise<SkillSummary[]> {
-    const skills = await this.store.listSkills(query)
-    return skills.map(skill => ({
-      name: skill.name,
-      trigger: extractTriggerSummary(skill.body.trigger),
-      path: `.paper/agents/skills/${skill.name}`,
-      usageCount: skill.usageCount,
-      dormant: skill.dormant,
-      promoted: skill.promoted,
-      scope: skill.scope,
-    }))
+  /**
+   * List all skills from multiple sources:
+   * 1. Skills table (evo-created skills)
+   * 2. Memories with kind: 'skill' (human-written, imported)
+   * 3. On-disk SKILL.md files not yet imported (hydrated on demand)
+   *
+   * Results are deduplicated by name (skills table wins, then memories, then disk).
+   */
+  async skills(query: SkillQuery & { cwd?: string; includeGlobal?: boolean } = {}): Promise<SkillSummary[]> {
+    const seenNames = new Set<string>()
+    const results: SkillSummary[] = []
+
+    const skillQuery: SkillQuery = { ...query }
+    const tableSkills = await this.core.listSkills(skillQuery)
+    for (const skill of tableSkills) {
+      const summary = skillItemToSummary(skill)
+      seenNames.add(summary.name.toLowerCase())
+      results.push(summary)
+    }
+
+    const memoryQuery: MemoryQuery = { kinds: ['skill'], limit: query.limit ?? 200 }
+    if (query.scopes?.length) memoryQuery.scopes = query.scopes
+    if (query.text) memoryQuery.text = query.text
+    const skillMemories = await this.core.recall(memoryQuery)
+    for (const memory of skillMemories) {
+      const summary = memoryItemToSummary(memory)
+      if (!summary) continue
+      const nameKey = summary.name.toLowerCase()
+      if (seenNames.has(nameKey)) continue
+      seenNames.add(nameKey)
+      results.push(summary)
+    }
+
+    if (query.cwd) {
+      const projectScope: MemoryScope = { type: 'project', id: query.cwd }
+      for (const { summary } of discoverSkillFiles(query.cwd, projectScope)) {
+        const nameKey = summary.name.toLowerCase()
+        if (seenNames.has(nameKey)) continue
+        seenNames.add(nameKey)
+        results.push(summary)
+      }
+    }
+
+    if (query.includeGlobal !== false) {
+      for (const { summary } of discoverGlobalSkillFiles()) {
+        const nameKey = summary.name.toLowerCase()
+        if (seenNames.has(nameKey)) continue
+        seenNames.add(nameKey)
+        results.push(summary)
+      }
+    }
+
+    results.sort((a, b) => {
+      if (a.dormant !== b.dormant) return a.dormant ? 1 : -1
+      if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount
+      return a.name.localeCompare(b.name)
+    })
+
+    return results.slice(0, query.limit ?? 200)
   }
 
   async backlog(scope: MemoryScope): Promise<BacklogInfo> {
