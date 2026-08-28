@@ -1,0 +1,57 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to publish (without v prefix, e.g. 0.3.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            TAG_VERSION="${{ github.event.inputs.tag }}"
+            if [ -z "$TAG_VERSION" ]; then
+              TAG_VERSION="$PKG_VERSION"
+            fi
+          fi
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Publishing version $PKG_VERSION"
+
+      - run: pnpm check
+
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

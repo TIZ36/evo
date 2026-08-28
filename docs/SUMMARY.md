@@ -39,6 +39,7 @@
 ## Development
 
 * [Contributing](development/contributing.md)
+* [Releasing](development/releasing.md)
 * [Project Rules](development/project-rules.md)
 
 ## Architecture
