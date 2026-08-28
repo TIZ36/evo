@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readd
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 //#region src/config/paths.ts
 /** Directory name before the package was renamed from `evo-memory` to `evo`. */
@@ -652,6 +652,7 @@ const string$1 = (params) => {
 };
 const integer = /^-?\d+$/;
 const number$1 = /^-?\d+(?:\.\d+)?$/;
+const boolean$1 = /^(?:true|false)$/i;
 const lowercase = /^[^A-Z]*$/;
 const uppercase = /^[^a-z]*$/;
 //#endregion
@@ -1449,6 +1450,24 @@ const $ZodNumber = /*@__PURE__*/ $constructor("$ZodNumber", (inst, def) => {
 const $ZodNumberFormat = /*@__PURE__*/ $constructor("$ZodNumberFormat", (inst, def) => {
 	$ZodCheckNumberFormat.init(inst, def);
 	$ZodNumber.init(inst, def);
+});
+const $ZodBoolean = /*@__PURE__*/ $constructor("$ZodBoolean", (inst, def) => {
+	$ZodType.init(inst, def);
+	inst._zod.pattern = boolean$1;
+	inst._zod.parse = (payload, _ctx) => {
+		if (def.coerce) try {
+			payload.value = Boolean(payload.value);
+		} catch (_) {}
+		const input = payload.value;
+		if (typeof input === "boolean") return payload;
+		payload.issues.push({
+			expected: "boolean",
+			code: "invalid_type",
+			input,
+			inst
+		});
+		return payload;
+	};
 });
 const $ZodUnknown = /*@__PURE__*/ $constructor("$ZodUnknown", (inst, def) => {
 	$ZodType.init(inst, def);
@@ -2497,6 +2516,13 @@ function _int(Class, params) {
 	});
 }
 // @__NO_SIDE_EFFECTS__
+function _boolean(Class, params) {
+	return new Class({
+		type: "boolean",
+		...normalizeParams(params)
+	});
+}
+// @__NO_SIDE_EFFECTS__
 function _unknown(Class) {
 	return new Class({ type: "unknown" });
 }
@@ -3045,6 +3071,9 @@ const numberProcessor = (schema, ctx, _json, _params) => {
 		} else json.exclusiveMaximum = exclusiveMaximum;
 	} else if (typeof maximum === "number") json.maximum = maximum;
 	if (typeof multipleOf === "number") json.multipleOf = multipleOf;
+};
+const booleanProcessor = (_schema, _ctx, json, _params) => {
+	json.type = "boolean";
 };
 const neverProcessor = (_schema, _ctx, json, _params) => {
 	json.not = {};
@@ -3680,6 +3709,14 @@ const ZodNumberFormat = /*@__PURE__*/ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
 	return /* @__PURE__ */ _int(ZodNumberFormat, params);
 }
+const ZodBoolean = /*@__PURE__*/ $constructor("ZodBoolean", (inst, def) => {
+	$ZodBoolean.init(inst, def);
+	ZodType.init(inst, def);
+	inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean(params) {
+	return /* @__PURE__ */ _boolean(ZodBoolean, params);
+}
 const ZodUnknown = /*@__PURE__*/ $constructor("ZodUnknown", (inst, def) => {
 	$ZodUnknown.init(inst, def);
 	ZodType.init(inst, def);
@@ -4085,7 +4122,8 @@ const skillItemSchema = object({
 	usageCount: number().int().nonnegative().default(0),
 	createdAt: number().int().nonnegative(),
 	updatedAt: number().int().nonnegative(),
-	source: skillSourceSchema.optional()
+	source: skillSourceSchema.optional(),
+	dormant: boolean().default(false)
 });
 object({
 	text: string().min(1).max(500),
@@ -4233,6 +4271,438 @@ ${body}`;
 function consolidationPrompt(items) {
 	return `Consolidate these memories. Merge duplicates, resolve contradictions in favor of newer and higher-confidence evidence, and preserve distinct durable facts. Never invent information. Return JSON only with the same {"memories":[...]} shape.\n\n${JSON.stringify(items)}`;
 }
+//#endregion
+//#region src/core/consolidate.ts
+const responseSchema$1 = object({ memories: array(object({
+	kind: _enum([
+		"fact",
+		"preference",
+		"constraint",
+		"procedure"
+	]),
+	title: string().min(1).max(120),
+	content: string().min(1).max(4e3),
+	tags: array(string().min(1)).max(20).optional(),
+	confidence: number().min(0).max(1).optional()
+})).max(100) });
+const DEFAULT_RETENTION = {
+	maxMemories: 200,
+	newbornGraceDays: 3,
+	consolidateIntervalHours: 24,
+	convergedMinIntervalHours: 72
+};
+/** Compute a digest of memory titles+contents for convergence detection. */
+function memoryDigest(items) {
+	const content = [...items].sort((a, b) => a.title.localeCompare(b.title)).map((m) => `${m.title}:${m.content}`).join("\n");
+	return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+/** Check if sleep/auto-consolidate should run. */
+async function shouldConsolidate(scope, store, config = DEFAULT_RETENTION, now = Date.now()) {
+	const state = await store.getConsolidationState(scope);
+	const replayCount = await store.countUnconsumedReplay(scope);
+	const hoursSinceLastConsolidate = state ? (now - state.lastConsolidateAt) / 36e5 : Infinity;
+	const baseInterval = config.consolidateIntervalHours;
+	const effectiveInterval = state?.converged ? Math.max(baseInterval * state.convergenceMultiplier, config.convergedMinIntervalHours) : baseInterval;
+	if (replayCount >= 10) return {
+		shouldConsolidate: true,
+		reason: "replay",
+		backlogSize: 0,
+		replaySize: replayCount,
+		hoursSinceLastConsolidate
+	};
+	if (hoursSinceLastConsolidate >= effectiveInterval) return {
+		shouldConsolidate: true,
+		reason: "schedule",
+		backlogSize: 0,
+		replaySize: replayCount,
+		hoursSinceLastConsolidate
+	};
+	return {
+		shouldConsolidate: false,
+		reason: "none",
+		backlogSize: 0,
+		replaySize: replayCount,
+		hoursSinceLastConsolidate
+	};
+}
+/** Enhanced consolidation prompt that includes replay buffer hints. */
+function consolidationPromptWithReplay(items, replay) {
+	let prompt = consolidationPrompt(items);
+	if (replay.length) {
+		const hints = replay.flatMap((entry) => entry.batch.memories.map((m) => `- [${m.kind}] ${m.title}: ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""}`)).slice(0, 20);
+		prompt += `\n\nRecent distillations (for context, may overlap with above):\n${hints.join("\n")}`;
+	}
+	return prompt;
+}
+/** Jaccard-like similarity for near-duplicate detection (cheap, no embeddings). */
+function jaccardSimilarity(a, b) {
+	const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+	const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+	if (!wordsA.size || !wordsB.size) return 0;
+	return [...wordsA].filter((w) => wordsB.has(w)).length / (/* @__PURE__ */ new Set([...wordsA, ...wordsB])).size;
+}
+/** Find near-duplicate hints for the consolidator. */
+function findNearDuplicates(items, threshold = .6) {
+	const pairs = [];
+	for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) if (jaccardSimilarity(items[i].content, items[j].content) >= threshold) pairs.push([items[i].title, items[j].title]);
+	return pairs;
+}
+/**
+* Safe consolidation with snapshot/restore and convergence detection.
+*
+* - Takes a snapshot before running the model
+* - Restores on empty/broken output
+* - Detects convergence when digest unchanged
+*/
+async function safeConsolidate(scope, store, model, config = DEFAULT_RETENTION, now = Date.now(), signal) {
+	const before = await store.list({
+		scopes: [scope],
+		limit: 1e3
+	});
+	if (!before.length) return {
+		result: {
+			before: 0,
+			after: 0,
+			items: []
+		},
+		converged: true,
+		restored: false
+	};
+	const beforeDigest = memoryDigest(before);
+	const state = await store.getConsolidationState(scope);
+	const replay = await store.getUnconsumedReplay(scope, 20);
+	const nearDupes = findNearDuplicates(before);
+	let prompt = consolidationPromptWithReplay(before, replay);
+	if (nearDupes.length) prompt += `\n\nPotential duplicates to merge:\n${nearDupes.map(([a, b]) => `- "${a}" and "${b}"`).join("\n")}`;
+	let parsed;
+	try {
+		const response = await model.complete({
+			purpose: "consolidate",
+			prompt,
+			...signal ? { signal } : {}
+		});
+		parsed = responseSchema$1.parse(parseModelJson(response));
+	} catch (error) {
+		return {
+			result: null,
+			converged: false,
+			restored: false,
+			error: String(error)
+		};
+	}
+	if (!parsed.memories.length) return {
+		result: null,
+		converged: false,
+		restored: true,
+		error: "empty consolidation result"
+	};
+	const items = parsed.memories.map((candidate, idx) => {
+		const existing = before.find((m) => m.title.toLowerCase() === candidate.title.toLowerCase());
+		return {
+			id: existing?.id ?? `consolidated-${idx}-${now}`,
+			scope,
+			kind: candidate.kind,
+			title: candidate.title,
+			content: candidate.content,
+			tags: candidate.tags ?? [],
+			usageCount: existing?.usageCount ?? 0,
+			createdAt: existing?.createdAt ?? now,
+			updatedAt: now,
+			...candidate.confidence !== void 0 ? { confidence: candidate.confidence } : {}
+		};
+	});
+	await store.replace(scope, items);
+	if (replay.length) await store.markReplayConsumed(replay.map((r) => r.id));
+	const afterDigest = memoryDigest(items);
+	const converged = afterDigest === beforeDigest || state?.lastDigest === afterDigest;
+	const newMultiplier = converged ? Math.min((state?.convergenceMultiplier ?? 1) * 3, 9) : 1;
+	await store.setConsolidationState(scope, {
+		lastConsolidateAt: now,
+		lastDigest: afterDigest,
+		converged,
+		convergenceMultiplier: newMultiplier
+	});
+	return {
+		result: {
+			before: before.length,
+			after: items.length,
+			items
+		},
+		converged,
+		restored: false
+	};
+}
+//#endregion
+//#region src/core/retention.ts
+/** Memories evo distilled itself — the only ones it may evict. */
+const OWN_RUNTIMES$1 = /* @__PURE__ */ new Set(["evo", "evo-memory"]);
+const isOwn$1 = (item) => OWN_RUNTIMES$1.has(item.source?.runtime ?? "");
+/**
+* Score a memory for eviction. Lower score = more likely to evict.
+*
+* Factors:
+* - Usage count (higher = keep)
+* - Recency (more recent = keep)
+* - Kind priority (facts/constraints > preferences > procedures)
+* - Newborn grace (recently created = protected)
+*/
+function evictionScore(item, config, now = Date.now()) {
+	const ageDays = (now - item.createdAt) / 864e5;
+	const recencyDays = (now - item.updatedAt) / 864e5;
+	if (ageDays < config.newbornGraceDays) return Infinity;
+	let score = 0;
+	score += item.usageCount * 10;
+	score += Math.max(0, 30 - recencyDays);
+	score += {
+		constraint: 20,
+		fact: 15,
+		preference: 10,
+		procedure: 5,
+		skill: 5
+	}[item.kind] ?? 0;
+	if (item.confidence !== void 0) score += item.confidence * 10;
+	return score;
+}
+/**
+* Find candidates for eviction when over capacity.
+*
+* Only evo-owned memories are candidates. Imported workspace files are never evicted.
+* Returns items sorted by score (lowest first = most evictable).
+*/
+function findEvictionCandidates(items, config = DEFAULT_RETENTION, now = Date.now()) {
+	const ownItems = items.filter(isOwn$1);
+	const overBy = items.length - config.maxMemories;
+	if (overBy <= 0) return [];
+	const scored = ownItems.map((item) => ({
+		item,
+		score: evictionScore(item, config, now),
+		reason: "over_cap"
+	}));
+	scored.sort((a, b) => a.score - b.score);
+	return scored.filter((c) => c.score !== Infinity).slice(0, overBy);
+}
+/**
+* Enforce store capacity by evicting lowest-scored memories.
+*
+* Evicted items are demoted (deleted) rather than archived.
+* Returns the items that were evicted.
+*/
+async function enforceCapacity(scope, store, config = DEFAULT_RETENTION, now = Date.now()) {
+	const candidates = findEvictionCandidates(await store.list({
+		scopes: [scope],
+		limit: 1e3
+	}), config, now);
+	const evicted = [];
+	for (const candidate of candidates) {
+		await store.delete(candidate.item.id);
+		evicted.push(candidate.item);
+	}
+	return evicted;
+}
+/**
+* Increment usage count for memories that were recalled.
+*
+* Called when memories are injected into context, tracking which ones are actually used.
+*/
+async function trackRecall(store, items) {
+	for (const item of items) await store.incrementMemoryUsage(item.id);
+}
+//#endregion
+//#region src/core/skill-polish.ts
+const KEBAB_CASE_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/**
+* L1 form check for skills.
+*
+* Validates:
+* - Kebab-case name
+* - Purpose present and concise
+* - Trigger with don't-use lines
+* - Anchored steps (numbered or bulleted)
+* - Falsifiable check
+*/
+function checkSkillForm(skill) {
+	const issues = [];
+	if (!KEBAB_CASE_REGEX.test(skill.name)) issues.push("name must be kebab-case");
+	if (!skill.body.purpose || skill.body.purpose.length < 10) issues.push("purpose too short");
+	if (skill.body.purpose.length > 500) issues.push("purpose too long (max 500 chars)");
+	if (!skill.body.trigger || skill.body.trigger.length < 10) issues.push("trigger too short");
+	if (!skill.body.steps || skill.body.steps.length < 20) issues.push("steps too short");
+	if (skill.body.steps.split("\n").filter((l) => /^\s*[\d\-\*]/.test(l)).length < 2) issues.push("steps should have at least 2 numbered/bulleted items");
+	if (!skill.body.check || skill.body.check.length < 10) issues.push("check (verification) too short");
+	if (skill.body.reflex && skill.body.reflex.length > 500) issues.push("reflex too long (max 500 chars)");
+	return {
+		valid: issues.length === 0,
+		issues
+	};
+}
+/**
+* Guards against runaway polish.
+*
+* Rejects:
+* - Step count growth > 50%
+* - Invented absolute paths
+* - Runaway reflex length
+*/
+function polishGuard(original, polished) {
+	const originalStepCount = original.steps.split("\n").filter((l) => /^\s*[\d\-\*]/.test(l)).length;
+	const polishedStepCount = polished.steps.split("\n").filter((l) => /^\s*[\d\-\*]/.test(l)).length;
+	if (originalStepCount > 0 && polishedStepCount > originalStepCount * 1.5) return {
+		allowed: false,
+		reason: `step count grew from ${originalStepCount} to ${polishedStepCount}`
+	};
+	const absolutePathRegex = /(?:\/(?:Users|home|opt|var|etc)\/|[A-Z]:\\)/;
+	if (!absolutePathRegex.test(original.steps) && absolutePathRegex.test(polished.steps)) return {
+		allowed: false,
+		reason: "polish introduced absolute paths"
+	};
+	if (polished.reflex && polished.reflex.length > 500) return {
+		allowed: false,
+		reason: "reflex too long after polish"
+	};
+	return { allowed: true };
+}
+const polishResponseSchema = object({ body: object({
+	purpose: string().min(1).max(500),
+	trigger: string().min(1).max(1e3),
+	steps: string().min(1).max(4e3),
+	check: string().min(1).max(500),
+	reflex: string().max(500).optional()
+}) });
+function polishPrompt(skill, lessons) {
+	const lessonText = lessons.map((l) => `- ${l.text}`).join("\n");
+	return `Polish this skill based on accumulated lessons. Fold lessons into the body where appropriate.
+
+SKILL: ${skill.name}
+
+CURRENT BODY:
+Purpose: ${skill.body.purpose}
+
+Trigger: ${skill.body.trigger}
+
+Steps:
+${skill.body.steps}
+
+Check: ${skill.body.check}
+
+${skill.body.reflex ? `Reflex: ${skill.body.reflex}` : ""}
+
+LESSONS TO FOLD:
+${lessonText}
+
+CONSTRAINTS:
+- Do NOT grow step count by more than 50%
+- Do NOT invent absolute file paths (use ~/ or relative)
+- Keep reflex under 500 chars
+- Preserve the core procedure structure
+
+Return JSON only: {"body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}`;
+}
+/**
+* Polish a skill by folding accumulated lessons into its body.
+*/
+async function polishSkill(skill, lessons, model, signal) {
+	if (!lessons.length) return {
+		polished: null,
+		error: "no lessons to fold"
+	};
+	const formCheck = checkSkillForm(skill);
+	if (!formCheck.valid) return {
+		polished: null,
+		error: `form check failed: ${formCheck.issues.join(", ")}`
+	};
+	try {
+		const response = await model.complete({
+			purpose: "consolidate",
+			prompt: polishPrompt(skill, lessons),
+			...signal ? { signal } : {}
+		});
+		const parsed = polishResponseSchema.parse(parseModelJson(response));
+		const guard = polishGuard(skill.body, parsed.body);
+		if (!guard.allowed) return {
+			polished: null,
+			guard
+		};
+		return { polished: parsed.body };
+	} catch (error) {
+		return {
+			polished: null,
+			error: String(error)
+		};
+	}
+}
+/**
+* Check if a skill should become dormant.
+*
+* A skill becomes dormant when:
+* - usageCount = 0
+* - Untouched for >= DORMANCY_DAYS
+*/
+function shouldBeDormant(skill, now = Date.now()) {
+	if (skill.usageCount > 0) return false;
+	return (now - skill.updatedAt) / 864e5 >= 21;
+}
+/**
+* Process dormancy for all skills in a scope.
+* Returns the names of skills that were made dormant.
+*/
+async function processDormancy(scope, store, now = Date.now()) {
+	const skills = await store.listSkills({
+		scopes: [scope],
+		includeDormant: true,
+		limit: 1e3
+	});
+	const madeDormant = [];
+	for (const skill of skills) if (!skill.dormant && shouldBeDormant(skill, now)) {
+		await store.setDormant(scope, skill.name, true);
+		madeDormant.push(skill.name);
+	}
+	return madeDormant;
+}
+/**
+* Find skills that need polishing.
+*
+* A skill needs polishing when:
+* - Has >= 3 unfolded lessons
+* - Or form check fails
+*/
+async function findSkillsToPolish(scope, store, minLessons = 3) {
+	const skills = await store.listSkills({
+		scopes: [scope],
+		limit: 100
+	});
+	const toPolish = [];
+	for (const skill of skills) {
+		const unfolded = await store.getUnfoldedLessons(scope, skill.name);
+		const formCheck = checkSkillForm(skill);
+		if (unfolded.length >= minLessons || !formCheck.valid) toPolish.push(skill);
+	}
+	return toPolish;
+}
+/**
+* Process polish for skills that need it.
+* Returns results for each skill processed.
+*/
+async function processPolish(scope, store, model, maxPerBatch = 2, signal) {
+	const toPolish = await findSkillsToPolish(scope, store);
+	const results = [];
+	for (const skill of toPolish.slice(0, maxPerBatch)) {
+		const result = await polishSkill(skill, await store.getUnfoldedLessons(scope, skill.name), model, signal);
+		if (result.polished) {
+			const updated = {
+				...skill,
+				body: result.polished,
+				updatedAt: Date.now()
+			};
+			await store.putSkill(updated);
+			await store.markLessonsFolded(scope, skill.name);
+		}
+		results.push({
+			skill: skill.name,
+			result
+		});
+	}
+	return results;
+}
 const candidateSchema = object({
 	kind: _enum([
 		"fact",
@@ -4268,6 +4738,7 @@ var EvoService = class {
 	skillStore;
 	model;
 	events;
+	retention;
 	now;
 	id;
 	constructor(options) {
@@ -4275,6 +4746,7 @@ var EvoService = class {
 		this.skillStore = options.skillStore;
 		this.model = options.model;
 		this.events = options.events ?? noopEventSink;
+		this.retention = options.retention ?? DEFAULT_RETENTION;
 		this.now = options.now ?? Date.now;
 		this.id = options.id ?? randomUUID;
 	}
@@ -4462,7 +4934,8 @@ var EvoService = class {
 					usageCount: 0,
 					createdAt: now,
 					updatedAt: now,
-					source
+					source,
+					dormant: false
 				};
 				await this.skillStore.putSkill(item);
 				skillDelta.created = item;
@@ -4477,6 +4950,14 @@ var EvoService = class {
 			turn: last,
 			delta: memoryDelta
 		});
+		if (this.store.appendReplay && memoryDelta.created.length + memoryDelta.updated.length > 0) {
+			const replayBatch = { memories: [...memoryDelta.created, ...memoryDelta.updated].map((m) => ({
+				title: m.title,
+				content: m.content,
+				kind: m.kind
+			})) };
+			await this.store.appendReplay(scope, replayBatch);
+		}
 		return {
 			memories: memoryDelta,
 			skill: skillDelta
@@ -4515,6 +4996,22 @@ var EvoService = class {
 		return this.skillStore.getLessons(scope, name);
 	}
 	async consolidate(scope, signal) {
+		const model = this.requireModel();
+		if (this.store.getConsolidationState && this.store.appendReplay) {
+			const fullStore = this.store;
+			const result = await safeConsolidate(scope, fullStore, model, this.retention, this.now(), signal);
+			if (result.error && !result.result) throw new Error(`consolidation failed: ${result.error}`);
+			if (result.result) await this.events.emit({
+				type: "memory.consolidated",
+				scope,
+				result: result.result
+			});
+			return result.result ?? {
+				before: 0,
+				after: 0,
+				items: []
+			};
+		}
 		const before = await this.store.list({
 			scopes: [scope],
 			limit: 1e3
@@ -4524,7 +5021,7 @@ var EvoService = class {
 			after: 0,
 			items: []
 		};
-		const parsed = responseSchema.parse(parseModelJson(await this.requireModel().complete({
+		const parsed = responseSchema.parse(parseModelJson(await model.complete({
 			purpose: "consolidate",
 			prompt: consolidationPrompt(before),
 			...signal ? { signal } : {}
@@ -4556,6 +5053,54 @@ var EvoService = class {
 		});
 		return result;
 	}
+	/** Check if auto-consolidation should run for a scope. */
+	async shouldAutoConsolidate(scope) {
+		const fullStore = this.store;
+		if (!fullStore.getConsolidationState || !fullStore.countUnconsumedReplay) return {
+			shouldConsolidate: false,
+			reason: "none",
+			backlogSize: 0,
+			replaySize: 0,
+			hoursSinceLastConsolidate: 0
+		};
+		return shouldConsolidate(scope, fullStore, this.retention, this.now());
+	}
+	/** Run auto-consolidation if conditions are met. */
+	async autoConsolidate(scope, signal) {
+		if (!(await this.shouldAutoConsolidate(scope)).shouldConsolidate) return null;
+		const model = this.requireModel();
+		const fullStore = this.store;
+		const result = await safeConsolidate(scope, fullStore, model, this.retention, this.now(), signal);
+		if (result.result) await this.events.emit({
+			type: "memory.consolidated",
+			scope,
+			result: result.result
+		});
+		return result;
+	}
+	/** Enforce store capacity by evicting low-scored memories. */
+	async enforceCapacity(scope) {
+		const evicted = await enforceCapacity(scope, this.store, this.retention, this.now());
+		for (const item of evicted) await this.events.emit({
+			type: "memory.deleted",
+			id: item.id
+		});
+		return evicted;
+	}
+	/** Track that memories were recalled (increments usage). */
+	async trackRecall(items) {
+		await trackRecall(this.store, items);
+	}
+	/** Process dormancy for all skills in a scope. */
+	async processDormancy(scope) {
+		if (!this.skillStore) return [];
+		return processDormancy(scope, this.skillStore, this.now());
+	}
+	/** Process polish for skills that need it. */
+	async processPolish(scope, signal) {
+		if (!this.skillStore || !this.model) return [];
+		return processPolish(scope, this.skillStore, this.model, 2, signal);
+	}
 	requireModel() {
 		if (!this.model) throw new Error("reflect and consolidate require a ModelRunner");
 		return this.model;
@@ -4571,8 +5116,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 );
 INSERT INTO schema_meta(version)
-SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 3 WHERE version < 3;
+SELECT 4 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 4 WHERE version < 4;
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -4611,6 +5156,7 @@ CREATE TABLE IF NOT EXISTS skills (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   source_json TEXT,
+  dormant INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope_key, name)
 );
 CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);
@@ -4625,9 +5171,31 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
   session_id TEXT,
   turn INTEGER,
   created_at INTEGER NOT NULL,
+  folded INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (scope_key, skill_name) REFERENCES skills(scope_key, name) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS skill_lessons_skill ON skill_lessons(scope_key, skill_name);
+
+-- Replay buffer: raw distilled batches for slow-path consolidation.
+-- Interleaved with current memories to give the consolidator more evidence.
+CREATE TABLE IF NOT EXISTS replay_buffer (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_key TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  batch_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  consumed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS replay_buffer_scope ON replay_buffer(scope_key, consumed, created_at DESC);
+
+-- Consolidation state: tracks when last consolidate ran and convergence.
+CREATE TABLE IF NOT EXISTS consolidation_state (
+  scope_key TEXT PRIMARY KEY,
+  last_consolidate_at INTEGER NOT NULL DEFAULT 0,
+  last_digest TEXT,
+  converged INTEGER NOT NULL DEFAULT 0,
+  convergence_multiplier REAL NOT NULL DEFAULT 1.0
+);
 `;
 //#endregion
 //#region src/storage/sqlite-store.ts
@@ -4641,7 +5209,7 @@ var SqliteMemoryStore = class {
 		this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
 		this.db.exec(SCHEMA_SQL);
 		const version = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-		if (Number(version?.version) !== 3) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+		if (Number(version?.version) !== 4) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
 	}
 	async get(id) {
 		const row = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
@@ -4737,6 +5305,15 @@ var SqliteMemoryStore = class {
 		const rows = this.db.prepare("SELECT scope_key, COUNT(*) AS count FROM memories GROUP BY scope_key").all();
 		return new Map(rows.map((row) => [String(row.scope_key), Number(row.count)]));
 	}
+	/** Count memories in a scope. */
+	async count(scope) {
+		const row = this.db.prepare("SELECT COUNT(*) AS count FROM memories WHERE scope_key = ?").get(scopeKey(scope));
+		return Number(row.count);
+	}
+	/** Increment usage count for a memory. */
+	async incrementMemoryUsage(id) {
+		this.db.prepare("UPDATE memories SET usage_count = usage_count + 1, updated_at = ? WHERE id = ?").run(Date.now(), id);
+	}
 	async getSkill(scope, name) {
 		const row = this.db.prepare("SELECT * FROM skills WHERE scope_key = ? AND name = ?").get(scopeKey(scope), name);
 		return row ? decodeSkill(row) : null;
@@ -4753,6 +5330,7 @@ var SqliteMemoryStore = class {
 			const pattern = `%${escapeLike(query.text.trim())}%`;
 			params.push(pattern, pattern);
 		}
+		if (!query.includeDormant) where.push("dormant = 0");
 		const limit = Math.max(1, Math.min(query.limit ?? 100, 1e3));
 		const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY usage_count DESC, updated_at DESC, name ASC LIMIT ?`;
 		return this.db.prepare(sql).all(...params, limit).map(decodeSkill);
@@ -4760,11 +5338,11 @@ var SqliteMemoryStore = class {
 	async putSkill(item) {
 		const value = skillItemSchema.parse(item);
 		this.db.prepare(`INSERT INTO skills
-      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json, dormant)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope_key, name) DO UPDATE SET scope_json=excluded.scope_json,
       body_json=excluded.body_json, usage_count=excluded.usage_count, updated_at=excluded.updated_at,
-      source_json=excluded.source_json`).run(...encodeSkill(value));
+      source_json=excluded.source_json, dormant=excluded.dormant`).run(...encodeSkill(value));
 	}
 	async deleteSkill(scope, name) {
 		this.db.prepare("DELETE FROM skills WHERE scope_key = ? AND name = ?").run(scopeKey(scope), name);
@@ -4781,7 +5359,80 @@ var SqliteMemoryStore = class {
 		this.db.prepare("INSERT INTO skill_lessons (scope_key, skill_name, text, session_id, turn, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(scopeKey(scope), name, lesson.text, lesson.sessionId ?? null, lesson.turn ?? null, lesson.createdAt);
 	}
 	async incrementUsage(scope, name) {
-		this.db.prepare("UPDATE skills SET usage_count = usage_count + 1, updated_at = ? WHERE scope_key = ? AND name = ?").run(Date.now(), scopeKey(scope), name);
+		this.db.prepare("UPDATE skills SET usage_count = usage_count + 1, updated_at = ?, dormant = 0 WHERE scope_key = ? AND name = ?").run(Date.now(), scopeKey(scope), name);
+	}
+	async getUnfoldedLessons(scope, name) {
+		return this.db.prepare("SELECT text, session_id, turn, created_at FROM skill_lessons WHERE scope_key = ? AND skill_name = ? AND folded = 0 ORDER BY created_at ASC").all(scopeKey(scope), name).map((row) => ({
+			text: String(row.text),
+			sessionId: row.session_id ? String(row.session_id) : void 0,
+			turn: row.turn != null ? Number(row.turn) : void 0,
+			createdAt: Number(row.created_at)
+		}));
+	}
+	async markLessonsFolded(scope, name) {
+		this.db.prepare("UPDATE skill_lessons SET folded = 1 WHERE scope_key = ? AND skill_name = ?").run(scopeKey(scope), name);
+	}
+	async setDormant(scope, name, dormant) {
+		this.db.prepare("UPDATE skills SET dormant = ?, updated_at = ? WHERE scope_key = ? AND name = ?").run(dormant ? 1 : 0, Date.now(), scopeKey(scope), name);
+	}
+	async appendReplay(scope, batch) {
+		this.db.prepare("INSERT INTO replay_buffer (scope_key, scope_json, batch_json, created_at) VALUES (?, ?, ?, ?)").run(scopeKey(scope), JSON.stringify(scope), JSON.stringify(batch), Date.now());
+	}
+	async getUnconsumedReplay(scope, limit = 50) {
+		return this.db.prepare("SELECT id, scope_json, batch_json, created_at FROM replay_buffer WHERE scope_key = ? AND consumed = 0 ORDER BY created_at ASC LIMIT ?").all(scopeKey(scope), limit).map((row) => ({
+			id: Number(row.id),
+			scope: JSON.parse(String(row.scope_json)),
+			batch: JSON.parse(String(row.batch_json)),
+			createdAt: Number(row.created_at),
+			consumed: false
+		}));
+	}
+	async markReplayConsumed(ids) {
+		if (!ids.length) return;
+		this.db.prepare(`UPDATE replay_buffer SET consumed = 1 WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+	}
+	async countUnconsumedReplay(scope) {
+		const row = this.db.prepare("SELECT COUNT(*) AS count FROM replay_buffer WHERE scope_key = ? AND consumed = 0").get(scopeKey(scope));
+		return Number(row.count);
+	}
+	async getConsolidationState(scope) {
+		const key = scopeKey(scope);
+		const row = this.db.prepare("SELECT * FROM consolidation_state WHERE scope_key = ?").get(key);
+		if (!row) return null;
+		return {
+			scopeKey: key,
+			lastConsolidateAt: Number(row.last_consolidate_at),
+			lastDigest: row.last_digest ? String(row.last_digest) : null,
+			converged: Boolean(row.converged),
+			convergenceMultiplier: Number(row.convergence_multiplier)
+		};
+	}
+	async setConsolidationState(scope, state) {
+		const key = scopeKey(scope);
+		if (await this.getConsolidationState(scope)) {
+			const updates = [];
+			const params = [];
+			if (state.lastConsolidateAt !== void 0) {
+				updates.push("last_consolidate_at = ?");
+				params.push(state.lastConsolidateAt);
+			}
+			if (state.lastDigest !== void 0) {
+				updates.push("last_digest = ?");
+				params.push(state.lastDigest ?? "");
+			}
+			if (state.converged !== void 0) {
+				updates.push("converged = ?");
+				params.push(state.converged ? 1 : 0);
+			}
+			if (state.convergenceMultiplier !== void 0) {
+				updates.push("convergence_multiplier = ?");
+				params.push(state.convergenceMultiplier);
+			}
+			if (updates.length) {
+				params.push(key);
+				this.db.prepare(`UPDATE consolidation_state SET ${updates.join(", ")} WHERE scope_key = ?`).run(...params);
+			}
+		} else this.db.prepare("INSERT INTO consolidation_state (scope_key, last_consolidate_at, last_digest, converged, convergence_multiplier) VALUES (?, ?, ?, ?, ?)").run(key, state.lastConsolidateAt ?? 0, state.lastDigest ?? null, state.converged ? 1 : 0, state.convergenceMultiplier ?? 1);
 	}
 	close() {
 		this.db.close();
@@ -4830,7 +5481,8 @@ function encodeSkill(item) {
 		item.usageCount,
 		item.createdAt,
 		item.updatedAt,
-		item.source ? JSON.stringify(item.source) : null
+		item.source ? JSON.stringify(item.source) : null,
+		item.dormant ? 1 : 0
 	];
 }
 function decodeSkill(row) {
@@ -4841,7 +5493,8 @@ function decodeSkill(row) {
 		usageCount: row.usage_count,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
-		source: row.source_json ? JSON.parse(String(row.source_json)) : void 0
+		source: row.source_json ? JSON.parse(String(row.source_json)) : void 0,
+		dormant: Boolean(row.dormant)
 	});
 }
 //#endregion
@@ -5654,6 +6307,7 @@ function openService() {
 	return {
 		service: new EvoService({
 			store,
+			skillStore: store,
 			events: store
 		}),
 		store
@@ -5748,6 +6402,7 @@ async function runDetachedFlush(payloadPath, config) {
 				total.updated.push(...delta.updated);
 				total.deleted.push(...delta.deleted);
 				if (config.debug) log(`reflect ok host=${batch.host} turns=${batch.turns.length} created=${delta.created.length} updated=${delta.updated.length} evicted=${delta.deleted.length}`);
+				await runSlowPath(service, batch.scope, config);
 			} catch (error) {
 				log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${String(error instanceof Error ? error.message : error)}`);
 			}
@@ -5755,6 +6410,25 @@ async function runDetachedFlush(payloadPath, config) {
 		if (config.notify) writeNotice(dataDir(), total);
 	} finally {
 		store.close?.();
+	}
+}
+/** Run slow-path maintenance: auto-consolidate, enforce capacity, dormancy, polish. */
+async function runSlowPath(service, scope, config) {
+	try {
+		const consolidateCheck = await service.shouldAutoConsolidate(scope);
+		if (consolidateCheck.shouldConsolidate) {
+			if (config.debug) log(`auto-consolidate triggered: ${consolidateCheck.reason}, replay=${consolidateCheck.replaySize}, hours=${consolidateCheck.hoursSinceLastConsolidate.toFixed(1)}`);
+			const result = await service.autoConsolidate(scope);
+			if (result?.result && config.debug) log(`auto-consolidate ok: ${result.result.before} -> ${result.result.after} memories, converged=${result.converged}`);
+		}
+		const evicted = await service.enforceCapacity(scope);
+		if (evicted.length && config.debug) log(`capacity enforcement evicted ${evicted.length} memories`);
+		const dormant = await service.processDormancy(scope);
+		if (dormant.length && config.debug) log(`dormancy: ${dormant.length} skills made dormant`);
+		const polished = await service.processPolish(scope);
+		if (polished.length && config.debug) for (const p of polished) log(`polish ${p.skill}: ${p.result.polished ? "ok" : p.result.error}`);
+	} catch (error) {
+		log(`ERROR slow-path failed: ${String(error instanceof Error ? error.message : error)}`);
 	}
 }
 /** Hook failures are silent in the session, so they must be recoverable from disk. */
