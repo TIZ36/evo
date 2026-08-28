@@ -150,4 +150,67 @@ describe('evo HTTP API', () => {
       await fiber.dispose()
     }
   })
+
+  it('lists skills via /skills endpoint', async () => {
+    const { fiber, svc } = await service()
+    try {
+      svc.setModelRunner({
+        complete: async () => JSON.stringify({
+          memories: [],
+          skill: {
+            name: 'test-skill',
+            body: {
+              purpose: 'Test purpose',
+              trigger: 'When testing',
+              steps: '1. Do this\n2. Do that',
+              check: 'It works',
+            },
+          },
+        }),
+      })
+
+      await svc.core.reflectBatch([
+        { sessionId: 's', turn: 1, scope: { type: 'project', id: '/repo' }, user: 'learn skill', assistant: 'done' },
+      ])
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=%2Frepo`)
+      expect(response.status).toBe(200)
+      const skills = (response.json as { skills: { name: string; trigger: string; promoted: boolean }[] }).skills
+      expect(skills).toHaveLength(1)
+      expect(skills[0]).toMatchObject({
+        name: 'test-skill',
+        trigger: 'When testing',
+        promoted: false,
+      })
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('returns backlog info via /backlog endpoint', async () => {
+    const { fiber, svc } = await service()
+    try {
+      svc.setModelRunner({
+        complete: async () => JSON.stringify({
+          memories: [{ kind: 'fact', title: 'Test', content: 'value' }],
+        }),
+      })
+
+      await svc.core.reflectBatch([
+        { sessionId: 's', turn: 1, scope: { type: 'project', id: '/repo' }, user: 'test', assistant: 'done' },
+      ])
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/backlog?scopeType=project&scopeId=%2Frepo`)
+      expect(response.status).toBe(200)
+      expect(response.json).toMatchObject({
+        replaySize: 1,
+        scope: { type: 'project', id: '/repo' },
+      })
+
+      const missing = await call(svc, 'GET', `${MEMORY_API_PATH}/backlog`)
+      expect(missing.status).toBe(400)
+    } finally {
+      await fiber.dispose()
+    }
+  })
 })

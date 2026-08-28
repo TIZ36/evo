@@ -44,6 +44,9 @@ export const skillSourceSchema = z.object({
 })
 export type SkillSource = z.infer<typeof skillSourceSchema>
 
+/** Promotion threshold: skills with uses >= this are considered mature/established. */
+export const SKILL_PROMOTION_THRESHOLD = 3
+
 export const skillItemSchema = z.object({
   name: skillNameSchema,
   scope: memoryScopeSchema,
@@ -53,6 +56,8 @@ export const skillItemSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
   source: skillSourceSchema.optional(),
   dormant: z.boolean().default(false),
+  /** True when uses >= SKILL_PROMOTION_THRESHOLD. Promoted skills are mature/established. */
+  promoted: z.boolean().default(false),
 })
 export type SkillItem = z.infer<typeof skillItemSchema>
 

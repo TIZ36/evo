@@ -149,6 +149,7 @@ describe('Eval: catalog-recall-size', () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         dormant: false,
+        promoted: false,
       })
 
       const context = await service.context({ scopes: [scope], maxChars: 6000 })
@@ -214,6 +215,7 @@ describe('Eval: dormancy', () => {
         createdAt: oldDate,
         updatedAt: oldDate,
         dormant: false,
+        promoted: false,
       })
 
       await store.putSkill({
@@ -224,6 +226,7 @@ describe('Eval: dormancy', () => {
         createdAt: oldDate,
         updatedAt: oldDate,
         dormant: false,
+        promoted: false,
       })
 
       const madeDormant = await service.processDormancy(scope)

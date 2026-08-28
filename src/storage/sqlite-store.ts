@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ConsolidationStore, MemoryEventSink, MemoryStore, ReplayStore, SkillStore } from '../core/contracts.js'
 import type { MemoryEvent, MemoryEventRecord } from '../core/contracts.js'
-import { memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
+import { memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, SKILL_PROMOTION_THRESHOLD, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js'
 
 type Row = Record<string, unknown>
@@ -16,8 +16,19 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;')
     this.db.exec(SCHEMA_SQL)
+
+    this.runMigrations()
+
     const version = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
     if (Number(version?.version) !== SCHEMA_VERSION) throw new Error(`unsupported evo schema version: ${String(version?.version)}`)
+  }
+
+  private runMigrations(): void {
+    try {
+      this.db.exec('ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0')
+    } catch {
+      // Column already exists - migration already applied
+    }
   }
 
   async get(id: string): Promise<MemoryItem | null> {
@@ -163,18 +174,18 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
       where.push('dormant = 0')
     }
     const limit = Math.max(1, Math.min(query.limit ?? 100, 1000))
-    const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY usage_count DESC, updated_at DESC, name ASC LIMIT ?`
+    const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY promoted DESC, usage_count DESC, updated_at DESC, name ASC LIMIT ?`
     return (this.db.prepare(sql).all(...params, limit) as Row[]).map(decodeSkill)
   }
 
   async putSkill(item: SkillItem): Promise<void> {
     const value = skillItemSchema.parse(item)
     this.db.prepare(`INSERT INTO skills
-      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json, dormant)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json, dormant, promoted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope_key, name) DO UPDATE SET scope_json=excluded.scope_json,
       body_json=excluded.body_json, usage_count=excluded.usage_count, updated_at=excluded.updated_at,
-      source_json=excluded.source_json, dormant=excluded.dormant`).run(...encodeSkill(value))
+      source_json=excluded.source_json, dormant=excluded.dormant, promoted=excluded.promoted`).run(...encodeSkill(value))
   }
 
   async deleteSkill(scope: MemoryScope, name: string): Promise<void> {
@@ -198,8 +209,16 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
   }
 
   async incrementUsage(scope: MemoryScope, name: string): Promise<void> {
+    const now = Date.now()
+    const key = scopeKey(scope)
+
     this.db.prepare('UPDATE skills SET usage_count = usage_count + 1, updated_at = ?, dormant = 0 WHERE scope_key = ? AND name = ?')
-      .run(Date.now(), scopeKey(scope), name)
+      .run(now, key, name)
+
+    const row = this.db.prepare('SELECT usage_count, promoted FROM skills WHERE scope_key = ? AND name = ?').get(key, name) as Row | undefined
+    if (row && !row.promoted && Number(row.usage_count) >= SKILL_PROMOTION_THRESHOLD) {
+      this.db.prepare('UPDATE skills SET promoted = 1, updated_at = ? WHERE scope_key = ? AND name = ?').run(now, key, name)
+    }
   }
 
   async getUnfoldedLessons(scope: MemoryScope, name: string): Promise<SkillLesson[]> {
@@ -310,7 +329,7 @@ function escapeLike(value: string) { return value.replace(/[\\%_]/g, match => `\
 function encodeSkill(item: SkillItem) {
   return [scopeKey(item.scope), JSON.stringify(item.scope), item.name, JSON.stringify(item.body),
     item.usageCount, item.createdAt, item.updatedAt, item.source ? JSON.stringify(item.source) : null,
-    item.dormant ? 1 : 0] as const
+    item.dormant ? 1 : 0, item.promoted ? 1 : 0] as const
 }
 
 function decodeSkill(row: Row): SkillItem {
@@ -323,5 +342,6 @@ function decodeSkill(row: Row): SkillItem {
     updatedAt: row.updated_at,
     source: row.source_json ? JSON.parse(String(row.source_json)) : undefined,
     dormant: Boolean(row.dormant),
+    promoted: Boolean(row.promoted),
   })
 }

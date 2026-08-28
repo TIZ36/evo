@@ -3,10 +3,20 @@ import { EvoService } from '../../src/core/evo.js'
 import type { MemoryItem, MemoryScope } from '../../src/core/types.js'
 import type { MemoryStore, ModelRunner } from '../../src/core/contracts.js'
 
+import type { MemoryQuery } from '../../src/core/types.js'
+import { scopeKey } from '../../src/core/types.js'
+
 class MemoryStoreStub implements MemoryStore {
   rows = new Map<string, MemoryItem>()
   async get(id: string) { return this.rows.get(id) ?? null }
-  async list() { return [...this.rows.values()] }
+  async list(query?: MemoryQuery) {
+    let items = [...this.rows.values()]
+    if (query?.scopes?.length) {
+      const keys = query.scopes.map(scopeKey)
+      items = items.filter(item => keys.includes(scopeKey(item.scope)))
+    }
+    return items
+  }
   async put(item: MemoryItem) { this.rows.set(item.id, item) }
   async delete(id: string) { this.rows.delete(id) }
   async replace(scope: MemoryScope, items: MemoryItem[]) {
@@ -116,5 +126,117 @@ describe('EvoService', () => {
     await service.remember({ scope, kind: 'fact', title: 'One', content: 'value', tags: [] })
     await expect(service.consolidate(scope)).rejects.toThrow('empty')
     expect(await store.list()).toHaveLength(1)
+  })
+})
+
+describe('Root vs project scope routing', () => {
+  const globalScope: MemoryScope = { type: 'global' }
+  const projectScope: MemoryScope = { type: 'project', id: '/repo' }
+
+  it('skips creating project memory when title exists at global scope', async () => {
+    const store = new MemoryStoreStub()
+    store.rows.set('global-pref', {
+      id: 'global-pref',
+      scope: globalScope,
+      kind: 'preference',
+      title: 'Language',
+      content: 'Use English globally',
+      tags: [],
+      usageCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      source: { runtime: 'evo' },
+    })
+
+    const service = new EvoService({
+      store,
+      model: runner({
+        memories: [{ kind: 'preference', title: 'Language', content: 'Use Chinese' }],
+      }),
+      now: () => 20,
+      id: () => 'm1',
+    })
+
+    const result = await service.reflectBatch([
+      { sessionId: 's', turn: 1, scope: projectScope, user: 'set language', assistant: 'done' },
+    ])
+
+    expect(result.memories.created).toHaveLength(0)
+    expect(result.memories.updated).toHaveLength(0)
+    const all = await store.list()
+    expect(all).toHaveLength(1)
+    expect(all[0]?.scope.type).toBe('global')
+  })
+
+  it('creates project memory when no global duplicate exists', async () => {
+    const store = new MemoryStoreStub()
+    let id = 0
+
+    const service = new EvoService({
+      store,
+      model: runner({
+        memories: [{ kind: 'fact', title: 'Project specific', content: 'Only for this repo' }],
+      }),
+      now: () => 20,
+      id: () => `m${++id}`,
+    })
+
+    const result = await service.reflectBatch([
+      { sessionId: 's', turn: 1, scope: projectScope, user: 'add fact', assistant: 'done' },
+    ])
+
+    expect(result.memories.created).toHaveLength(1)
+    expect(result.memories.created[0]?.scope.type).toBe('project')
+  })
+
+  it('passes global titles to the prompt for dedup context', async () => {
+    const store = new MemoryStoreStub()
+    store.rows.set('global-rule', {
+      id: 'global-rule',
+      scope: globalScope,
+      kind: 'constraint',
+      title: 'Global Rule',
+      content: 'Applies everywhere',
+      tags: [],
+      usageCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      source: { runtime: 'evo' },
+    })
+
+    let seenPrompt = ''
+    const service = new EvoService({
+      store,
+      model: { complete: async (req) => { seenPrompt = req.prompt; return '{"memories":[]}' } },
+      now: () => 20,
+      id: () => 'm1',
+    })
+
+    await service.reflectBatch([
+      { sessionId: 's', turn: 1, scope: projectScope, user: 'q', assistant: 'a' },
+    ])
+
+    expect(seenPrompt).toContain('Global Rule')
+    expect(seenPrompt).toContain('do NOT create a project-scoped duplicate')
+  })
+
+  it('does not query global when already reflecting at global scope', async () => {
+    const store = new MemoryStoreStub()
+    let listCalls = 0
+    const originalList = store.list.bind(store)
+    store.list = async (...args) => { listCalls++; return originalList(...args) }
+
+    const service = new EvoService({
+      store,
+      model: runner({ memories: [{ kind: 'fact', title: 'Global fact', content: 'Value' }] }),
+      now: () => 20,
+      id: () => 'm1',
+    })
+
+    await service.reflectBatch([
+      { sessionId: 's', turn: 1, scope: globalScope, user: 'q', assistant: 'a' },
+    ])
+
+    expect(listCalls).toBe(1)
   })
 })

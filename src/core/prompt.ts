@@ -5,6 +5,8 @@ export type SkillCatalogEntry = {
   name: string
   trigger: string
   path: string
+  /** Uses >= 3 indicates a mature/established skill. */
+  promoted?: boolean
 }
 
 /**
@@ -31,7 +33,8 @@ export function renderMemoryContext(items: MemoryItem[], skills: SkillCatalogEnt
     if (output.length + skillHead.length < maxChars) {
       output += skillHead
       for (const skill of skills) {
-        const line = `- **${skill.name}**: ${skill.trigger} → \`${skill.path}\`\n`
+        const promotedMark = skill.promoted ? ' ★' : ''
+        const line = `- **${skill.name}**${promotedMark}: ${skill.trigger} → \`${skill.path}\`\n`
         if (output.length + line.length > maxChars) break
         output += line
       }
@@ -58,6 +61,10 @@ export type ReflectionContext = {
   existing: string[]
   /** Skills already stored in this scope, so the model updates instead of duplicating. */
   existingSkills: string[]
+  /** Titles already stored at global scope (for dedup across scopes). */
+  existingGlobal?: string[] | undefined
+  /** Skills already stored at global scope (for dedup across scopes). */
+  existingGlobalSkills?: string[] | undefined
 }
 
 /** Memories a batch may produce, scaled to its size: one turn rarely earns more than one. */
@@ -85,11 +92,21 @@ export function reflectionPrompt(turns: Turn[], context: ReflectionContext): str
   const knownSkills = context.existingSkills.length
     ? `\n\nSkills already stored in this scope. Reuse a name verbatim to update that skill:\n${context.existingSkills.map(name => `- ${name}`).join('\n')}`
     : ''
+  const globalTitles = context.existingGlobal?.length
+    ? `\n\nGlobal memory titles (do NOT create a project-scoped duplicate of these):\n${context.existingGlobal.map(title => `- ${title}`).join('\n')}`
+    : ''
+  const globalSkills = context.existingGlobalSkills?.length
+    ? `\n\nGlobal skills (do NOT create a project-scoped duplicate of these):\n${context.existingGlobalSkills.map(name => `- ${name}`).join('\n')}`
+    : ''
   return `Extract only durable, reusable memory from these ${turns.length} completed agent turn(s). Do not save transient task state, guesses, secrets, credentials, or raw logs.
 
 Prefer what recurs across turns: a pit stepped into more than once, a convention confirmed again, an operating path that took shape. One-off details of a single task are not durable, however true they are — a topic merely explained at length is not durable either.
 
 Return at most ${context.cap} memories, and prefer fewer. Return an empty memories array when nothing is durable; that is the normal outcome for an ordinary turn.
+
+## Scope Routing
+
+When unsure about scope, default to project scope (the current working directory). Only use global scope for truly universal facts that apply across ALL projects. Skip creating a project-scoped memory if the same title already exists at global scope — the global one takes precedence.
 
 ## Skills
 
@@ -109,11 +126,13 @@ Return skill only when the batch shows a procedure that:
 2. Would benefit from explicit documentation
 3. Is likely to recur in future work
 
+Skills follow the same scope routing rule: default to project scope unless clearly global. Skip creating a project skill if the same name exists globally.
+
 Return JSON only:
 {"memories":[{"kind":"fact|preference|constraint|procedure","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"],"skill":null}
 
 or with a skill:
-{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}
+{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}${globalTitles}${globalSkills}
 
 ${body}`
 }

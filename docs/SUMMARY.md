@@ -17,11 +17,14 @@
 
 * [How It Works](concepts/how-it-works.md)
 * [Memory Scopes](concepts/memory-scopes.md)
+* [Scope Routing](concepts/scope-routing.md)
 * [Skills vs Memories](concepts/skills-vs-memories.md)
+* [Skill Promotion](concepts/skill-promotion.md)
 * [Batch Distillation](concepts/batch-distillation.md)
 * [Consolidation](concepts/consolidation.md)
 * [Retention](concepts/retention.md)
 * [Workspace Import](concepts/workspace-import.md)
+* [Credential Scanning](concepts/credential-scanning.md)
 
 ## Configuration
 

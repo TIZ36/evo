@@ -4123,7 +4123,9 @@ const skillItemSchema = object({
 	createdAt: number().int().nonnegative(),
 	updatedAt: number().int().nonnegative(),
 	source: skillSourceSchema.optional(),
-	dormant: boolean().default(false)
+	dormant: boolean().default(false),
+	/** True when uses >= SKILL_PROMOTION_THRESHOLD. Promoted skills are mature/established. */
+	promoted: boolean().default(false)
 });
 object({
 	text: string().min(1).max(500),
@@ -4210,7 +4212,8 @@ function renderMemoryContext(items, skills = [], maxChars = 6e3) {
 		if (output.length + skillHead.length < maxChars) {
 			output += skillHead;
 			for (const skill of skills) {
-				const line = `- **${skill.name}**: ${skill.trigger} → \`${skill.path}\`\n`;
+				const promotedMark = skill.promoted ? " ★" : "";
+				const line = `- **${skill.name}**${promotedMark}: ${skill.trigger} → \`${skill.path}\`\n`;
 				if (output.length + line.length > maxChars) break;
 				output += line;
 			}
@@ -4236,11 +4239,17 @@ function reflectionPrompt(turns, context) {
 	const body = turns.map((turn, index) => `--- turn ${index + 1} ---\nUser:\n${turn.user}\n\nAssistant:\n${turn.assistant}\n\nTools: ${(turn.tools ?? []).join(", ")}`).join("\n\n");
 	const known = context.existing.length ? `\n\nMemory titles already stored in this scope. Reuse a title verbatim to correct or extend that memory; list a title under "evict" only when these turns prove it wrong. Never restate one under a new title:\n${context.existing.map((title) => `- ${title}`).join("\n")}` : "";
 	const knownSkills = context.existingSkills.length ? `\n\nSkills already stored in this scope. Reuse a name verbatim to update that skill:\n${context.existingSkills.map((name) => `- ${name}`).join("\n")}` : "";
+	const globalTitles = context.existingGlobal?.length ? `\n\nGlobal memory titles (do NOT create a project-scoped duplicate of these):\n${context.existingGlobal.map((title) => `- ${title}`).join("\n")}` : "";
+	const globalSkills = context.existingGlobalSkills?.length ? `\n\nGlobal skills (do NOT create a project-scoped duplicate of these):\n${context.existingGlobalSkills.map((name) => `- ${name}`).join("\n")}` : "";
 	return `Extract only durable, reusable memory from these ${turns.length} completed agent turn(s). Do not save transient task state, guesses, secrets, credentials, or raw logs.
 
 Prefer what recurs across turns: a pit stepped into more than once, a convention confirmed again, an operating path that took shape. One-off details of a single task are not durable, however true they are — a topic merely explained at length is not durable either.
 
 Return at most ${context.cap} memories, and prefer fewer. Return an empty memories array when nothing is durable; that is the normal outcome for an ordinary turn.
+
+## Scope Routing
+
+When unsure about scope, default to project scope (the current working directory). Only use global scope for truly universal facts that apply across ALL projects. Skip creating a project-scoped memory if the same title already exists at global scope — the global one takes precedence.
 
 ## Skills
 
@@ -4260,11 +4269,13 @@ Return skill only when the batch shows a procedure that:
 2. Would benefit from explicit documentation
 3. Is likely to recur in future work
 
+Skills follow the same scope routing rule: default to project scope unless clearly global. Skip creating a project skill if the same name exists globally.
+
 Return JSON only:
 {"memories":[{"kind":"fact|preference|constraint|procedure","title":"short stable key","content":"concise durable value","tags":["tag"],"confidence":0.0}],"evict":["title of a stored memory these turns disproved"],"skill":null}
 
 or with a skill:
-{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}
+{"memories":[...],"evict":[...],"skill":{"name":"kebab-case-name","body":{"purpose":"...","trigger":"...","steps":"...","check":"...","reflex":"..."}}}${known}${knownSkills}${globalTitles}${globalSkills}
 
 ${body}`;
 }
@@ -4703,6 +4714,207 @@ async function processPolish(scope, store, model, maxPerBatch = 2, signal) {
 	}
 	return results;
 }
+//#endregion
+//#region src/core/credential-scan.ts
+/**
+* Credential patterns to detect.
+*
+* Each pattern has:
+* - type: human-readable label
+* - regex: pattern to match
+* - minLength: minimum match length to consider a real credential (avoids false positives on short strings)
+*/
+const CREDENTIAL_PATTERNS = [
+	{
+		type: "private-key",
+		regex: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/gi
+	},
+	{
+		type: "private-key",
+		regex: /-----BEGIN\s+EC\s+PRIVATE\s+KEY-----[\s\S]*?-----END\s+EC\s+PRIVATE\s+KEY-----/gi
+	},
+	{
+		type: "private-key",
+		regex: /-----BEGIN\s+OPENSSH\s+PRIVATE\s+KEY-----[\s\S]*?-----END\s+OPENSSH\s+PRIVATE\s+KEY-----/gi
+	},
+	{
+		type: "api-key",
+		regex: /\bsk-[a-zA-Z0-9-]{20,}/g,
+		minLength: 25
+	},
+	{
+		type: "api-key",
+		regex: /\bAIza[a-zA-Z0-9_-]{30,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bghp_[a-zA-Z0-9]{36,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bgho_[a-zA-Z0-9]{36,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bghr_[a-zA-Z0-9]{36,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bghs_[a-zA-Z0-9]{36,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bxox[baprs]-[a-zA-Z0-9-]{10,}/gi
+	},
+	{
+		type: "api-key",
+		regex: /\bAKIA[A-Z0-9]{16,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bnpm_[a-zA-Z0-9]{36,}/g
+	},
+	{
+		type: "api-key",
+		regex: /\bpypi-[a-zA-Z0-9_-]{60,}/g
+	},
+	{
+		type: "token",
+		regex: /(?:bearer|token|auth(?:orization)?|api[_-]?key|secret)['":\s]+[=:]\s*['"]?([a-zA-Z0-9_\-/.+=]{20,})['"]?/gi,
+		minLength: 30
+	},
+	{
+		type: "password",
+		regex: /(?:password|passwd|pwd|secret)['":\s]*[=:]\s*['"]?([^\s'"]{8,})['"]?/gi,
+		minLength: 15
+	},
+	{
+		type: "jwt",
+		regex: /\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g
+	},
+	{
+		type: "encoded-secret",
+		regex: /\b[A-Za-z0-9+/]{64,}={0,2}\b/g,
+		minLength: 64
+	}
+];
+/**
+* Known test/fixture patterns that should be ignored.
+*
+* These patterns match strings that look like credentials but are clearly
+* fixtures (e.g., "test-api-key-12345", "sk-test-...", placeholder values).
+*/
+const FIXTURE_PATTERNS = [
+	/\btest[-_]?api[-_]?key\b/i,
+	/\bsk-test[-_]/i,
+	/\bsk-fake[-_]/i,
+	/\bsk-mock[-_]/i,
+	/\b(?:fake|test|mock|dummy|sample|example|placeholder|your[-_]?)(?:[-_]?(?:api)?[-_]?key|[-_]?token|[-_]?secret)\b/i,
+	/\b(?:xxx|yyy|zzz)+\b/i,
+	/\bAKIAIOSFODNN7EXAMPLE\b/i,
+	/\bwJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY\b/i,
+	/\b0{16,}\b/,
+	/\b1{16,}\b/,
+	/\ba{16,}\b/i,
+	/\bYOUR[-_]?[A-Z_]+[-_]?(?:HERE|KEY|TOKEN|SECRET)\b/i
+];
+/** Check if a match looks like a fixture/test value. Also check for "test" within key. */
+function containsTestMarker(match) {
+	return /[-_]test[-_]|[-_]fake[-_]|[-_]mock[-_]|[-_]dummy[-_]/i.test(match);
+}
+/**
+* Create a redacted preview of a credential.
+*/
+function redact(value) {
+	if (value.length <= 12) return "****";
+	return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+/**
+* Check if a match looks like a fixture/test value.
+*/
+function isFixture(match) {
+	return FIXTURE_PATTERNS.some((pattern) => pattern.test(match)) || containsTestMarker(match);
+}
+/**
+* Scan content for credential-like patterns.
+*
+* @param content - Text to scan
+* @returns ScanResult with safety status and any matches found
+*/
+function scanForCredentials(content) {
+	const matches = [];
+	for (const { type, regex, minLength } of CREDENTIAL_PATTERNS) {
+		const re = new RegExp(regex.source, regex.flags);
+		let match;
+		while ((match = re.exec(content)) !== null) {
+			const value = match[0];
+			if (minLength && value.length < minLength) continue;
+			if (isFixture(value)) continue;
+			matches.push({
+				type,
+				offset: match.index,
+				length: value.length,
+				preview: redact(value)
+			});
+		}
+	}
+	const deduped = deduplicateOverlapping(matches);
+	return {
+		safe: deduped.length === 0,
+		matches: deduped
+	};
+}
+/**
+* Remove overlapping matches, keeping the longest one.
+*/
+function deduplicateOverlapping(matches) {
+	if (matches.length <= 1) return matches;
+	const sorted = [...matches].sort((a, b) => a.offset - b.offset || b.length - a.length);
+	const result = [];
+	let lastEnd = -1;
+	for (const match of sorted) {
+		const end = match.offset + match.length;
+		if (match.offset >= lastEnd) {
+			result.push(match);
+			lastEnd = end;
+		} else if (end > lastEnd) {
+			const last = result[result.length - 1];
+			if (last && match.length > last.length) {
+				result[result.length - 1] = match;
+				lastEnd = end;
+			}
+		}
+	}
+	return result;
+}
+/**
+* Combined scan of multiple text fields.
+*
+* Useful for scanning all parts of a skill body or memory at once.
+*/
+function scanMultiple(texts) {
+	const allMatches = [];
+	let offset = 0;
+	for (const text of texts) {
+		const result = scanForCredentials(text);
+		for (const match of result.matches) allMatches.push({
+			...match,
+			offset: offset + match.offset
+		});
+		offset += text.length + 1;
+	}
+	return {
+		safe: allMatches.length === 0,
+		matches: allMatches
+	};
+}
+//#endregion
+//#region src/core/evo.ts
+/** Logger for credential skip events. Override in tests. */
+let logCredentialSkip = (context, scan) => {
+	const matches = scan.matches.map((m) => `${m.type}: ${m.preview}`).join(", ");
+	console.warn(`[evo] credential skip (${context}): ${matches}`);
+};
 const candidateSchema = object({
 	kind: _enum([
 		"fact",
@@ -4797,7 +5009,8 @@ var EvoService = class {
 			for (const skill of skills) skillEntries.push({
 				name: skill.name,
 				trigger: extractTriggerSummary(skill.body.trigger),
-				path: query.skillRoot ? `${query.skillRoot}/${skill.name}` : `.paper/agents/skills/${skill.name}`
+				path: query.skillRoot ? `${query.skillRoot}/${skill.name}` : `.paper/agents/skills/${skill.name}`,
+				promoted: skill.promoted
 			});
 		}
 		return renderMemoryContext(memories, skillEntries, query.maxChars);
@@ -4854,10 +5067,26 @@ var EvoService = class {
 			scopes: [scope],
 			limit: 1e3
 		})).filter(isOwnSkill) : [];
+		const globalScope = { type: "global" };
+		const isGlobalScope = scope.type === "global";
+		let globalMemories = [];
+		let globalSkills = [];
+		if (!isGlobalScope) {
+			globalMemories = (await this.store.list({
+				scopes: [globalScope],
+				limit: 1e3
+			})).filter(isOwn);
+			globalSkills = this.skillStore ? (await this.skillStore.listSkills({
+				scopes: [globalScope],
+				limit: 1e3
+			})).filter(isOwnSkill) : [];
+		}
 		const prompt = reflectionPrompt(turns, {
 			cap: reflectionCap(turns.length),
 			existing: own.map((item) => item.title),
-			existingSkills: existingSkills.map((item) => item.name)
+			existingSkills: existingSkills.map((item) => item.name),
+			existingGlobal: isGlobalScope ? void 0 : globalMemories.map((item) => item.title),
+			existingGlobalSkills: isGlobalScope ? void 0 : globalSkills.map((item) => item.name)
 		});
 		const parsed = responseSchema.parse(parseModelJson(await model.complete({
 			purpose: "reflect",
@@ -4871,7 +5100,15 @@ var EvoService = class {
 			turn: last.turn
 		};
 		for (const candidate of parsed.memories.slice(0, reflectionCap(turns.length))) {
+			const contentScan = scanMultiple([candidate.title, candidate.content]);
+			if (!contentScan.safe) {
+				logCredentialSkip(`memory/${candidate.title}`, contentScan);
+				continue;
+			}
 			const at = candidate.scope ?? scope;
+			if (!isGlobalScope && at.type !== "global") {
+				if (globalMemories.find((item) => item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase())) continue;
+			}
 			const old = existing.find((item) => scopeKey(item.scope) === scopeKey(at) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase());
 			const now = this.now();
 			if (old) {
@@ -4911,39 +5148,70 @@ var EvoService = class {
 			memoryDelta.deleted.push(doomed.id);
 		}
 		if (parsed.skill && this.skillStore) {
-			const now = this.now();
-			const oldSkill = existingSkills.find((item) => item.name === parsed.skill.name);
-			if (oldSkill) {
-				const item = {
-					...oldSkill,
-					body: parsed.skill.body,
-					updatedAt: now,
-					source
-				};
-				await this.skillStore.putSkill(item);
-				skillDelta.updated = item;
-				await this.events.emit({
-					type: "skill.updated",
-					skill: item
-				});
-			} else {
-				const item = {
-					name: parsed.skill.name,
-					scope,
-					body: parsed.skill.body,
-					usageCount: 0,
-					createdAt: now,
-					updatedAt: now,
-					source,
-					dormant: false
-				};
-				await this.skillStore.putSkill(item);
-				skillDelta.created = item;
-				await this.events.emit({
-					type: "skill.created",
-					skill: item
-				});
+			if (!isGlobalScope) {
+				if (globalSkills.find((item) => item.name === parsed.skill.name)) {
+					await this.events.emit({
+						type: "memory.reflected",
+						turn: last,
+						delta: memoryDelta
+					});
+					if (this.store.appendReplay && memoryDelta.created.length + memoryDelta.updated.length > 0) {
+						const replayBatch = { memories: [...memoryDelta.created, ...memoryDelta.updated].map((m) => ({
+							title: m.title,
+							content: m.content,
+							kind: m.kind
+						})) };
+						await this.store.appendReplay(scope, replayBatch);
+					}
+					return {
+						memories: memoryDelta,
+						skill: skillDelta
+					};
+				}
 			}
+			const skillScan = scanMultiple([
+				parsed.skill.body.purpose,
+				parsed.skill.body.trigger,
+				parsed.skill.body.steps,
+				parsed.skill.body.check,
+				parsed.skill.body.reflex ?? ""
+			]);
+			if (skillScan.safe) {
+				const now = this.now();
+				const oldSkill = existingSkills.find((item) => item.name === parsed.skill.name);
+				if (oldSkill) {
+					const item = {
+						...oldSkill,
+						body: parsed.skill.body,
+						updatedAt: now,
+						source
+					};
+					await this.skillStore.putSkill(item);
+					skillDelta.updated = item;
+					await this.events.emit({
+						type: "skill.updated",
+						skill: item
+					});
+				} else {
+					const item = {
+						name: parsed.skill.name,
+						scope,
+						body: parsed.skill.body,
+						usageCount: 0,
+						createdAt: now,
+						updatedAt: now,
+						source,
+						dormant: false,
+						promoted: false
+					};
+					await this.skillStore.putSkill(item);
+					skillDelta.created = item;
+					await this.events.emit({
+						type: "skill.created",
+						skill: item
+					});
+				}
+			} else logCredentialSkip(`skill/${parsed.skill.name}`, skillScan);
 		}
 		await this.events.emit({
 			type: "memory.reflected",
@@ -4973,6 +5241,16 @@ var EvoService = class {
 		if (!this.skillStore) return;
 		await this.skillStore.incrementUsage(scope, name);
 		if (lesson) {
+			const lessonScan = scanForCredentials(lesson);
+			if (!lessonScan.safe) {
+				logCredentialSkip(`lesson/${name}`, lessonScan);
+				await this.events.emit({
+					type: "skill.used",
+					scope,
+					name
+				});
+				return;
+			}
 			const lessonItem = {
 				text: lesson.trim(),
 				createdAt: this.now()
@@ -5116,8 +5394,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 );
 INSERT INTO schema_meta(version)
-SELECT 4 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 4 WHERE version < 4;
+SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 5 WHERE version < 5;
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -5157,6 +5435,7 @@ CREATE TABLE IF NOT EXISTS skills (
   updated_at INTEGER NOT NULL,
   source_json TEXT,
   dormant INTEGER NOT NULL DEFAULT 0,
+  promoted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope_key, name)
 );
 CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);
@@ -5208,8 +5487,14 @@ var SqliteMemoryStore = class {
 		this.db = new DatabaseSync(path);
 		this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
 		this.db.exec(SCHEMA_SQL);
+		this.runMigrations();
 		const version = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-		if (Number(version?.version) !== 4) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+		if (Number(version?.version) !== 5) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+	}
+	runMigrations() {
+		try {
+			this.db.exec("ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0");
+		} catch {}
 	}
 	async get(id) {
 		const row = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
@@ -5332,17 +5617,17 @@ var SqliteMemoryStore = class {
 		}
 		if (!query.includeDormant) where.push("dormant = 0");
 		const limit = Math.max(1, Math.min(query.limit ?? 100, 1e3));
-		const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY usage_count DESC, updated_at DESC, name ASC LIMIT ?`;
+		const sql = `SELECT * FROM skills ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY promoted DESC, usage_count DESC, updated_at DESC, name ASC LIMIT ?`;
 		return this.db.prepare(sql).all(...params, limit).map(decodeSkill);
 	}
 	async putSkill(item) {
 		const value = skillItemSchema.parse(item);
 		this.db.prepare(`INSERT INTO skills
-      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json, dormant)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (scope_key, scope_json, name, body_json, usage_count, created_at, updated_at, source_json, dormant, promoted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope_key, name) DO UPDATE SET scope_json=excluded.scope_json,
       body_json=excluded.body_json, usage_count=excluded.usage_count, updated_at=excluded.updated_at,
-      source_json=excluded.source_json, dormant=excluded.dormant`).run(...encodeSkill(value));
+      source_json=excluded.source_json, dormant=excluded.dormant, promoted=excluded.promoted`).run(...encodeSkill(value));
 	}
 	async deleteSkill(scope, name) {
 		this.db.prepare("DELETE FROM skills WHERE scope_key = ? AND name = ?").run(scopeKey(scope), name);
@@ -5359,7 +5644,11 @@ var SqliteMemoryStore = class {
 		this.db.prepare("INSERT INTO skill_lessons (scope_key, skill_name, text, session_id, turn, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(scopeKey(scope), name, lesson.text, lesson.sessionId ?? null, lesson.turn ?? null, lesson.createdAt);
 	}
 	async incrementUsage(scope, name) {
-		this.db.prepare("UPDATE skills SET usage_count = usage_count + 1, updated_at = ?, dormant = 0 WHERE scope_key = ? AND name = ?").run(Date.now(), scopeKey(scope), name);
+		const now = Date.now();
+		const key = scopeKey(scope);
+		this.db.prepare("UPDATE skills SET usage_count = usage_count + 1, updated_at = ?, dormant = 0 WHERE scope_key = ? AND name = ?").run(now, key, name);
+		const row = this.db.prepare("SELECT usage_count, promoted FROM skills WHERE scope_key = ? AND name = ?").get(key, name);
+		if (row && !row.promoted && Number(row.usage_count) >= 3) this.db.prepare("UPDATE skills SET promoted = 1, updated_at = ? WHERE scope_key = ? AND name = ?").run(now, key, name);
 	}
 	async getUnfoldedLessons(scope, name) {
 		return this.db.prepare("SELECT text, session_id, turn, created_at FROM skill_lessons WHERE scope_key = ? AND skill_name = ? AND folded = 0 ORDER BY created_at ASC").all(scopeKey(scope), name).map((row) => ({
@@ -5482,7 +5771,8 @@ function encodeSkill(item) {
 		item.createdAt,
 		item.updatedAt,
 		item.source ? JSON.stringify(item.source) : null,
-		item.dormant ? 1 : 0
+		item.dormant ? 1 : 0,
+		item.promoted ? 1 : 0
 	];
 }
 function decodeSkill(row) {
@@ -5494,7 +5784,8 @@ function decodeSkill(row) {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 		source: row.source_json ? JSON.parse(String(row.source_json)) : void 0,
-		dormant: Boolean(row.dormant)
+		dormant: Boolean(row.dormant),
+		promoted: Boolean(row.promoted)
 	});
 }
 //#endregion

@@ -179,6 +179,62 @@ Triggers workspace file import for a directory.
 }
 ```
 
+### GET /evo/skills
+
+Lists skills with filtering options.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `scopeType` | string | Filter by scope type |
+| `scopeId` | string | Filter by scope identifier |
+| `scopeKey` | string | Combined scope filter |
+| `text` | string | Search skill names and bodies |
+| `includeDormant` | boolean | Include dormant skills |
+| `limit` | number | Maximum items to return |
+
+**Response:**
+
+```json
+{
+  "skills": [
+    {
+      "name": "git-commit-workflow",
+      "trigger": "When committing code",
+      "path": ".paper/agents/skills/git-commit-workflow",
+      "usageCount": 5,
+      "dormant": false,
+      "promoted": true,
+      "scope": { "type": "project", "id": "~/projects/myapp" }
+    }
+  ]
+}
+```
+
+### GET /evo/backlog
+
+Returns the replay buffer backlog size for a scope.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `scopeType` | string | Required: scope type |
+| `scopeId` | string | Required for non-global: scope identifier |
+| `scopeKey` | string | Alternative: combined scope filter |
+
+**Response:**
+
+```json
+{
+  "replaySize": 7,
+  "scope": { "type": "project", "id": "~/projects/myapp" }
+}
+```
+
+The `replaySize` indicates how many distillation batches are queued for the next consolidation. When this grows large (10+), auto-consolidation may trigger.
+
 ## Error Responses
 
 Errors return appropriate HTTP status codes with a JSON body:

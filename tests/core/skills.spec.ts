@@ -6,7 +6,7 @@ import { EvoService, type ReflectResult } from '../../src/core/evo.js'
 import type { MemoryItem, MemoryScope, SkillBody, SkillItem } from '../../src/core/types.js'
 import type { MemoryStore, ModelRunner, SkillStore } from '../../src/core/contracts.js'
 import { SqliteMemoryStore } from '../../src/storage/sqlite-store.js'
-import { buildCatalogEntries, materializeSkill, renderLessonsMarkdown, renderSkillMarkdown, SKILL_ROOT, updateCatalog } from '../../src/workspace/skill-materializer.js'
+import { buildCatalogEntries, materializeSkill, renderLessonsMarkdown, renderSkillMarkdown, setCredentialSkipLogger, SKILL_ROOT, updateCatalog } from '../../src/workspace/skill-materializer.js'
 
 class MemoryStoreStub implements MemoryStore {
   rows = new Map<string, MemoryItem>()
@@ -65,6 +65,7 @@ describe('Skill types and storage', () => {
         updatedAt: 1000,
         source: { runtime: 'evo' },
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
       const retrieved = await store.getSkill(scope, 'git-commit-workflow')
@@ -85,6 +86,7 @@ describe('Skill types and storage', () => {
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
       await store.incrementUsage(scope, 'test-skill')
@@ -107,6 +109,7 @@ describe('Skill types and storage', () => {
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
       await store.addLesson(scope, 'skill-with-lessons', { text: 'First lesson', createdAt: 2000 })
@@ -132,6 +135,7 @@ describe('Skill types and storage', () => {
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
       await store.addLesson(scope, 'deletable-skill', { text: 'A lesson', createdAt: 2000 })
@@ -192,6 +196,7 @@ describe('Skill reflection', () => {
         updatedAt: 1000,
         source: { runtime: 'evo' },
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(existingSkill)
 
@@ -258,6 +263,7 @@ describe('Skill materialization', () => {
       createdAt: 1000,
       updatedAt: 1000,
       dormant: false,
+      promoted: false,
     }
     const md = renderSkillMarkdown(skill)
     expect(md).toContain('# Git Commit Workflow')
@@ -290,13 +296,15 @@ describe('Skill materialization', () => {
       createdAt: 1000,
       updatedAt: 1000,
       dormant: false,
+      promoted: false,
     }
     const lessons = [
       { text: 'Lesson one', createdAt: 2000 },
     ]
 
-    const relativePath = materializeSkill(cwd, skill, lessons)
-    expect(relativePath).toBe(`${SKILL_ROOT}/test-skill`)
+    const result = materializeSkill(cwd, skill, lessons)
+    expect(result.written).toBe(true)
+    expect(result.path).toBe(`${SKILL_ROOT}/test-skill`)
 
     const skillMd = readFileSync(join(cwd, SKILL_ROOT, 'test-skill', 'SKILL.md'), 'utf8')
     expect(skillMd).toContain('# Test Skill')
@@ -313,7 +321,8 @@ describe('Skill materialization', () => {
       { name: 'skill-two', trigger: 'When doing Y', path: `${SKILL_ROOT}/skill-two` },
     ]
 
-    updateCatalog(cwd, entries)
+    const result = updateCatalog(cwd, entries)
+    expect(result.written).toBe(true)
 
     const catalog = readFileSync(join(cwd, '.paper/AGENT_MEMORY.md'), 'utf8')
     expect(catalog).toContain('## Learned Skills')
@@ -324,7 +333,7 @@ describe('Skill materialization', () => {
   it('builds catalog entries from skills', () => {
     const cwd = '/repo'
     const skills: SkillItem[] = [
-      { name: 'git-commit', scope, body: { purpose: 'p', trigger: 'When committing code', steps: 's', check: 'c' }, usageCount: 0, createdAt: 1, updatedAt: 1, dormant: false },
+      { name: 'git-commit', scope, body: { purpose: 'p', trigger: 'When committing code', steps: 's', check: 'c' }, usageCount: 0, createdAt: 1, updatedAt: 1, dormant: false, promoted: false },
     ]
     const entries = buildCatalogEntries(cwd, skills)
     expect(entries).toHaveLength(1)
@@ -353,6 +362,7 @@ describe('Skill recall', () => {
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
 
@@ -383,6 +393,7 @@ describe('Skill usage tracking', () => {
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
+        promoted: false,
       }
       await store.putSkill(skill)
 
@@ -395,6 +406,99 @@ describe('Skill usage tracking', () => {
       const lessons = await store.getLessons(scope, 'tracked-skill')
       expect(lessons).toHaveLength(1)
       expect(lessons[0]?.text).toBe('This worked well')
+    } finally {
+      close()
+    }
+  })
+})
+
+describe('Skill promotion by use', () => {
+  it('promotes skill after reaching threshold uses', async () => {
+    const { store, close } = makeStore()
+    try {
+      const skill: SkillItem = {
+        name: 'promotable-skill',
+        scope,
+        body: makeSkillBody('promotable'),
+        usageCount: 0,
+        createdAt: 1000,
+        updatedAt: 1000,
+        dormant: false,
+        promoted: false,
+      }
+      await store.putSkill(skill)
+
+      expect((await store.getSkill(scope, 'promotable-skill'))?.promoted).toBe(false)
+
+      await store.incrementUsage(scope, 'promotable-skill')
+      expect((await store.getSkill(scope, 'promotable-skill'))?.promoted).toBe(false)
+
+      await store.incrementUsage(scope, 'promotable-skill')
+      expect((await store.getSkill(scope, 'promotable-skill'))?.promoted).toBe(false)
+
+      await store.incrementUsage(scope, 'promotable-skill')
+      const promoted = await store.getSkill(scope, 'promotable-skill')
+      expect(promoted?.usageCount).toBe(3)
+      expect(promoted?.promoted).toBe(true)
+    } finally {
+      close()
+    }
+  })
+
+  it('lists promoted skills first', async () => {
+    const { store, close } = makeStore()
+    try {
+      const skill1: SkillItem = {
+        name: 'zzz-last',
+        scope,
+        body: makeSkillBody('last'),
+        usageCount: 10,
+        createdAt: 1000,
+        updatedAt: 1000,
+        dormant: false,
+        promoted: false,
+      }
+      const skill2: SkillItem = {
+        name: 'aaa-first',
+        scope,
+        body: makeSkillBody('first'),
+        usageCount: 1,
+        createdAt: 1000,
+        updatedAt: 1000,
+        dormant: false,
+        promoted: true,
+      }
+      await store.putSkill(skill1)
+      await store.putSkill(skill2)
+
+      const skills = await store.listSkills({ scopes: [scope] })
+      expect(skills[0]?.name).toBe('aaa-first')
+      expect(skills[0]?.promoted).toBe(true)
+      expect(skills[1]?.name).toBe('zzz-last')
+    } finally {
+      close()
+    }
+  })
+
+  it('includes promoted marker in context', async () => {
+    const { store, close } = makeStore()
+    try {
+      const skill: SkillItem = {
+        name: 'promoted-skill',
+        scope,
+        body: makeSkillBody('promoted'),
+        usageCount: 5,
+        createdAt: 1000,
+        updatedAt: 1000,
+        dormant: false,
+        promoted: true,
+      }
+      await store.putSkill(skill)
+
+      const service = new EvoService({ store, skillStore: store })
+      const context = await service.context({ scopes: [scope], maxChars: 6000 })
+
+      expect(context).toContain('**promoted-skill** ★')
     } finally {
       close()
     }
@@ -430,5 +534,110 @@ describe('Imported skill protection', () => {
     expect(result.memories.deleted).toEqual([])
     const remaining = await store.list()
     expect(remaining.map(m => m.id)).toContain('imported')
+  })
+})
+
+describe('Credential skip on write', () => {
+  it('skips materializing skill with credentials in body', () => {
+    const cwd = fixture()
+    const skill: SkillItem = {
+      name: 'credential-skill',
+      scope,
+      body: {
+        purpose: 'Deploy with secret key',
+        trigger: 'When deploying',
+        steps: '1. Set API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n2. Deploy',
+        check: 'Check deployment succeeded',
+      },
+      usageCount: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+      dormant: false,
+      promoted: false,
+    }
+
+    const logs: string[] = []
+    const restore = setCredentialSkipLogger((ctx) => { logs.push(ctx) })
+
+    try {
+      const result = materializeSkill(cwd, skill, [])
+      expect(result.written).toBe(false)
+      expect(result.skipReason).toBe('credential-detected')
+      expect(result.credentialScan?.safe).toBe(false)
+      expect(logs).toContain('skill/credential-skill/body')
+    } finally {
+      restore()
+    }
+  })
+
+  it('skips materializing skill with credentials in lessons', () => {
+    const cwd = fixture()
+    const skill: SkillItem = {
+      name: 'lesson-credential-skill',
+      scope,
+      body: makeSkillBody('test'),
+      usageCount: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+      dormant: false,
+      promoted: false,
+    }
+    const lessons = [
+      { text: 'Used ghp_1234567890abcdefghijklmnopqrstuvwxyzAB for auth', createdAt: 2000 },
+    ]
+
+    const logs: string[] = []
+    const restore = setCredentialSkipLogger((ctx) => { logs.push(ctx) })
+
+    try {
+      const result = materializeSkill(cwd, skill, lessons)
+      expect(result.written).toBe(false)
+      expect(result.skipReason).toBe('credential-detected')
+      expect(logs).toContain('skill/lesson-credential-skill/lessons')
+    } finally {
+      restore()
+    }
+  })
+
+  it('allows skills with fixture/test credentials', () => {
+    const cwd = fixture()
+    const skill: SkillItem = {
+      name: 'fixture-skill',
+      scope,
+      body: {
+        purpose: 'Test API integration',
+        trigger: 'When testing',
+        steps: '1. Use test key sk-test-abc123def456ghi789jkl012mno345pqr678\n2. Run tests',
+        check: 'Tests pass',
+      },
+      usageCount: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+      dormant: false,
+      promoted: false,
+    }
+
+    const result = materializeSkill(cwd, skill, [])
+    expect(result.written).toBe(true)
+    expect(result.skipReason).toBeUndefined()
+  })
+
+  it('skips catalog update with credentials in entries', () => {
+    const cwd = fixture()
+    const entries = [
+      { name: 'secret-skill', trigger: 'Use key sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234', path: '.paper/agents/skills/secret-skill' },
+    ]
+
+    const logs: string[] = []
+    const restore = setCredentialSkipLogger((ctx) => { logs.push(ctx) })
+
+    try {
+      const result = updateCatalog(cwd, entries)
+      expect(result.written).toBe(false)
+      expect(result.skipReason).toBe('credential-detected')
+      expect(logs).toContain('catalog')
+    } finally {
+      restore()
+    }
   })
 })

@@ -30,6 +30,7 @@ function makeSkill(name: string, overrides: Partial<SkillItem> = {}): SkillItem 
     createdAt: 1000,
     updatedAt: 1000,
     dormant: false,
+    promoted: false,
     ...overrides,
   }
 }
