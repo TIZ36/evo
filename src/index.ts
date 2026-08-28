@@ -9,7 +9,21 @@ export * from './core/skill-polish.js'
 export * from './config/paths.js'
 export * from './storage/sqlite-store.js'
 export * from './workspace/importer.js'
-export * from './workspace/skill-materializer.js'
+export {
+  SKILL_ROOT,
+  CATALOG_PATH,
+  renderSkillMarkdown,
+  renderLessonsMarkdown,
+  scanSkillBody,
+  scanLessons,
+  materializeSkill,
+  materializeSkillPath,
+  updateCatalog,
+  buildCatalogEntries,
+  type MaterializeResult,
+  type CatalogUpdateResult,
+  type WriteSkipReason,
+} from './workspace/skill-materializer.js'
 export { EvoCordisService } from './cordis/service.js'
 
 /**

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS skills (
   updated_at INTEGER NOT NULL,
   source_json TEXT,
   dormant INTEGER NOT NULL DEFAULT 0,
+  promoted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (scope_key, name)
 );
 CREATE INDEX IF NOT EXISTS skills_scope ON skills(scope_key);

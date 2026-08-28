@@ -2,8 +2,31 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { SkillItem, SkillLesson } from '../core/types.js'
 import type { SkillCatalogEntry } from '../core/prompt.js'
+import { scanForCredentials, scanMultiple, type ScanResult } from '../core/credential-scan.js'
 
 export type { SkillCatalogEntry } from '../core/prompt.js'
+
+export type WriteSkipReason = 'credential-detected'
+
+export type MaterializeResult = {
+  written: boolean
+  path: string
+  skipReason?: WriteSkipReason
+  credentialScan?: ScanResult
+}
+
+/** Log function for credential skip events. Override in tests. */
+export let logCredentialSkip: (context: string, scan: ScanResult) => void = (context, scan) => {
+  const matches = scan.matches.map(m => `${m.type}: ${m.preview}`).join(', ')
+  console.warn(`[evo] credential skip (${context}): ${matches}`)
+}
+
+/** Override the credential skip logger (for testing). */
+export function setCredentialSkipLogger(fn: typeof logCredentialSkip): () => void {
+  const prev = logCredentialSkip
+  logCredentialSkip = fn
+  return () => { logCredentialSkip = prev }
+}
 
 /** Where evo-owned skills are written under a project's cwd. */
 export const SKILL_ROOT = '.paper/agents/skills'
@@ -66,12 +89,52 @@ export function renderLessonsMarkdown(skillName: string, lessons: SkillLesson[])
 }
 
 /**
+ * Scan a skill body for credentials.
+ */
+export function scanSkillBody(skill: SkillItem): ScanResult {
+  const texts = [
+    skill.body.purpose,
+    skill.body.trigger,
+    skill.body.steps,
+    skill.body.check,
+    skill.body.reflex ?? '',
+  ]
+  return scanMultiple(texts)
+}
+
+/**
+ * Scan lessons for credentials.
+ */
+export function scanLessons(lessons: SkillLesson[]): ScanResult {
+  return scanMultiple(lessons.map(l => l.text))
+}
+
+/**
  * Materialize a skill to disk: SKILL.md + optional .memory.md.
  *
- * @returns The relative path to the skill directory from cwd.
+ * Scans content for credentials before writing. If credentials are detected,
+ * the write is skipped and logged (no throw into user session).
+ *
+ * @returns MaterializeResult with write status and path.
  */
-export function materializeSkill(cwd: string, skill: SkillItem, lessons: SkillLesson[] = []): string {
+export function materializeSkill(cwd: string, skill: SkillItem, lessons: SkillLesson[] = []): MaterializeResult {
+  const relativePath = join(SKILL_ROOT, skill.name)
   const skillDir = join(cwd, SKILL_ROOT, skill.name)
+
+  const bodyScan = scanSkillBody(skill)
+  if (!bodyScan.safe) {
+    logCredentialSkip(`skill/${skill.name}/body`, bodyScan)
+    return { written: false, path: relativePath, skipReason: 'credential-detected', credentialScan: bodyScan }
+  }
+
+  if (lessons.length) {
+    const lessonScan = scanLessons(lessons)
+    if (!lessonScan.safe) {
+      logCredentialSkip(`skill/${skill.name}/lessons`, lessonScan)
+      return { written: false, path: relativePath, skipReason: 'credential-detected', credentialScan: lessonScan }
+    }
+  }
+
   mkdirSync(skillDir, { recursive: true })
 
   const skillPath = join(skillDir, 'SKILL.md')
@@ -82,7 +145,23 @@ export function materializeSkill(cwd: string, skill: SkillItem, lessons: SkillLe
     writeFileSync(memoryPath, renderLessonsMarkdown(skill.name, lessons))
   }
 
-  return join(SKILL_ROOT, skill.name)
+  return { written: true, path: relativePath }
+}
+
+/**
+ * Legacy wrapper for backward compatibility.
+ * @deprecated Use materializeSkill which returns MaterializeResult.
+ */
+export function materializeSkillPath(cwd: string, skill: SkillItem, lessons: SkillLesson[] = []): string {
+  const result = materializeSkill(cwd, skill, lessons)
+  return result.path
+}
+
+export type CatalogUpdateResult = {
+  written: boolean
+  path: string
+  skipReason?: WriteSkipReason
+  credentialScan?: ScanResult
 }
 
 /**
@@ -90,9 +169,17 @@ export function materializeSkill(cwd: string, skill: SkillItem, lessons: SkillLe
  *
  * The catalog is a markdown file with a section managed by evo. If the section
  * markers don't exist, they are appended to the file.
+ *
+ * Scans entries for credentials before writing. If detected, skips and logs.
  */
-export function updateCatalog(cwd: string, entries: SkillCatalogEntry[]): void {
+export function updateCatalog(cwd: string, entries: SkillCatalogEntry[]): CatalogUpdateResult {
   const catalogPath = join(cwd, CATALOG_PATH)
+
+  const entryScan = scanMultiple(entries.flatMap(e => [e.name, e.trigger, e.path]))
+  if (!entryScan.safe) {
+    logCredentialSkip('catalog', entryScan)
+    return { written: false, path: CATALOG_PATH, skipReason: 'credential-detected', credentialScan: entryScan }
+  }
 
   let content = ''
   try {
@@ -118,6 +205,7 @@ export function updateCatalog(cwd: string, entries: SkillCatalogEntry[]): void {
   }
 
   writeFileSync(catalogPath, content)
+  return { written: true, path: CATALOG_PATH }
 }
 
 function renderCatalogSection(entries: SkillCatalogEntry[]): string {

@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { memoryScopeSchema, type MemoryKind, type MemoryQuery, type MemoryScope } from '../core/types.js'
+import { memoryScopeSchema, type MemoryKind, type MemoryQuery, type MemoryScope, type SkillQuery } from '../core/types.js'
 import { parseScopeKey } from '../core/scope-tree.js'
 import type { EvoCordisService } from './service.js'
 
@@ -67,6 +67,15 @@ export function createMemoryApiHandler(service: EvoCordisService): (req: Incomin
         if (typeof body?.cwd !== 'string' || !body.cwd.trim()) return send(res, 400, { error: 'body.cwd must be a non-empty string' })
         return send(res, 200, { result: await service.importWorkspace(body.cwd, { force: body.force === true }) })
       }
+      if (req.method === 'GET' && rest === '/skills') {
+        const query = parseSkillQuery(url)
+        return send(res, 200, { skills: await service.skills(query) })
+      }
+      if (req.method === 'GET' && rest === '/backlog') {
+        const query = parseMemoryQuery(url)
+        if (!query.scopes?.length) return send(res, 400, { error: 'scope required (scopeType or scopeKey)' })
+        return send(res, 200, await service.backlog(query.scopes[0]!))
+      }
       return send(res, 404, { error: 'not found' })
     } catch (error) {
       return send(res, 500, { error: String(error instanceof Error ? error.message : error) })
@@ -98,6 +107,30 @@ function parseMemoryQuery(url: URL): MemoryQuery {
   if (text) query.text = text
   const tags = params.get('tags')
   if (tags) query.tags = tags.split(',').map(part => part.trim()).filter(Boolean)
+  const limit = Number(params.get('limit') ?? 100)
+  if (Number.isFinite(limit)) query.limit = limit
+  return query
+}
+
+function parseSkillQuery(url: URL): SkillQuery {
+  const params = url.searchParams
+  const query: SkillQuery = {}
+  const scopeKeyParam = params.get('scopeKey')
+  if (scopeKeyParam) {
+    const scope = parseScopeKey(scopeKeyParam)
+    if (scope) query.scopes = [scope]
+  }
+  const scopeType = params.get('scopeType')
+  if (!scopeKeyParam && scopeType) {
+    const scope: MemoryScope = { type: scopeType as MemoryScope['type'] }
+    const scopeId = params.get('scopeId')
+    if (scopeId) scope.id = scopeId
+    if (memoryScopeSchema.safeParse(scope).success) query.scopes = [scope]
+  }
+  const text = params.get('text')
+  if (text) query.text = text
+  const includeDormant = params.get('includeDormant')
+  if (includeDormant === 'true') query.includeDormant = true
   const limit = Number(params.get('limit') ?? 100)
   if (Number.isFinite(limit)) query.limit = limit
   return query

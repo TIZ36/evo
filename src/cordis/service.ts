@@ -1,5 +1,5 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import type { MemoryCandidate, MemoryQuery, MemoryScope, Turn } from '../core/types.js'
+import type { MemoryCandidate, MemoryQuery, MemoryScope, SkillItem, SkillQuery, Turn } from '../core/types.js'
 import type { MemoryEventRecord, ModelRunner } from '../core/contracts.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
@@ -7,6 +7,28 @@ import { WorkspaceImporter, type WorkspaceImportResult } from '../workspace/impo
 import { buildScopeTree, type ScopeTreeNode } from '../core/scope-tree.js'
 import { resolveDataPaths } from '../config/paths.js'
 import type { Config } from './config.js'
+
+export type SkillSummary = {
+  name: string
+  trigger: string
+  path: string
+  usageCount: number
+  dormant: boolean
+  promoted: boolean
+  scope: MemoryScope
+}
+
+export type BacklogInfo = {
+  replaySize: number
+  scope: MemoryScope
+}
+
+function extractTriggerSummary(trigger: string, maxLen = 80): string {
+  const firstLine = trigger.split('\n')[0] ?? trigger
+  const cleaned = firstLine.replace(/^[-*]\s*/, '').trim()
+  if (cleaned.length <= maxLen) return cleaned
+  return `${cleaned.slice(0, maxLen - 3)}...`
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context { evo: EvoCordisService }
@@ -30,7 +52,7 @@ export class EvoCordisService extends Service {
     super(ctx, 'evo')
     this.databasePath = resolveDataPaths(config).databasePath
     this.store = new SqliteMemoryStore(this.databasePath)
-    this.core = new EvoService({ store: this.store, events: this.store })
+    this.core = new EvoService({ store: this.store, skillStore: this.store, events: this.store })
     ctx.effect(() => () => this.store.close(), 'evo.close')
   }
 
@@ -49,6 +71,24 @@ export class EvoCordisService extends Service {
   events(limit = 50): Promise<MemoryEventRecord[]> { return this.store.listEvents(limit) }
   async scopes(): Promise<ScopeTreeNode[]> { return buildScopeTree(await this.store.countByScopeKey()) }
   status(): MemoryStatus { return { ok: true, databasePath: this.databasePath, busy: this.busyCount > 0 } }
+
+  async skills(query: SkillQuery = {}): Promise<SkillSummary[]> {
+    const skills = await this.store.listSkills(query)
+    return skills.map(skill => ({
+      name: skill.name,
+      trigger: extractTriggerSummary(skill.body.trigger),
+      path: `.paper/agents/skills/${skill.name}`,
+      usageCount: skill.usageCount,
+      dormant: skill.dormant,
+      promoted: skill.promoted,
+      scope: skill.scope,
+    }))
+  }
+
+  async backlog(scope: MemoryScope): Promise<BacklogInfo> {
+    const replaySize = await this.store.countUnconsumedReplay(scope)
+    return { replaySize, scope }
+  }
 
   private async tracked<T>(fn: () => Promise<T>): Promise<T> {
     this.busyCount += 1

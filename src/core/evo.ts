@@ -8,6 +8,20 @@ import { consolidationPrompt, reflectionCap, reflectionPrompt, renderMemoryConte
 import { DEFAULT_RETENTION, safeConsolidate, shouldConsolidate, type SafeConsolidateResult } from './consolidate.js'
 import { enforceCapacity, trackRecall } from './retention.js'
 import { processDormancy, processPolish } from './skill-polish.js'
+import { scanForCredentials, scanMultiple, type ScanResult } from './credential-scan.js'
+
+/** Logger for credential skip events. Override in tests. */
+export let logCredentialSkip: (context: string, scan: ScanResult) => void = (context, scan) => {
+  const matches = scan.matches.map(m => `${m.type}: ${m.preview}`).join(', ')
+  console.warn(`[evo] credential skip (${context}): ${matches}`)
+}
+
+/** Override the credential skip logger (for testing). */
+export function setCredentialSkipLogger(fn: typeof logCredentialSkip): () => void {
+  const prev = logCredentialSkip
+  logCredentialSkip = fn
+  return () => { logCredentialSkip = prev }
+}
 
 const candidateMemoryKindSchema = z.enum(['fact', 'preference', 'constraint', 'procedure'])
 const candidateSchema = z.object({
@@ -103,6 +117,7 @@ export class EvoService {
           name: skill.name,
           trigger: extractTriggerSummary(skill.body.trigger),
           path: query.skillRoot ? `${query.skillRoot}/${skill.name}` : `.paper/agents/skills/${skill.name}`,
+          promoted: skill.promoted,
         })
       }
     }
@@ -144,17 +159,44 @@ export class EvoService {
     const existing = await this.store.list({ scopes: [scope], limit: 1000 })
     const own = existing.filter(isOwn)
     const existingSkills = this.skillStore ? (await this.skillStore.listSkills({ scopes: [scope], limit: 1000 })).filter(isOwnSkill) : []
+
+    const globalScope: MemoryScope = { type: 'global' }
+    const isGlobalScope = scope.type === 'global'
+    let globalMemories: MemoryItem[] = []
+    let globalSkills: SkillItem[] = []
+
+    if (!isGlobalScope) {
+      globalMemories = (await this.store.list({ scopes: [globalScope], limit: 1000 })).filter(isOwn)
+      globalSkills = this.skillStore ? (await this.skillStore.listSkills({ scopes: [globalScope], limit: 1000 })).filter(isOwnSkill) : []
+    }
+
     const prompt = reflectionPrompt(turns, {
       cap: reflectionCap(turns.length),
       existing: own.map(item => item.title),
       existingSkills: existingSkills.map(item => item.name),
+      existingGlobal: isGlobalScope ? undefined : globalMemories.map(item => item.title),
+      existingGlobalSkills: isGlobalScope ? undefined : globalSkills.map(item => item.name),
     })
     const parsed = responseSchema.parse(parseModelJson(await model.complete({ purpose: 'reflect', prompt, ...(signal ? { signal } : {}) })))
     const last = turns[turns.length - 1]!
     const source = { runtime: 'evo', sessionId: last.sessionId, turn: last.turn }
 
     for (const candidate of parsed.memories.slice(0, reflectionCap(turns.length))) {
+      const contentScan = scanMultiple([candidate.title, candidate.content])
+      if (!contentScan.safe) {
+        logCredentialSkip(`memory/${candidate.title}`, contentScan)
+        continue
+      }
+
       const at = candidate.scope ?? scope
+
+      if (!isGlobalScope && at.type !== 'global') {
+        const globalDupe = globalMemories.find(item =>
+          item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase()
+        )
+        if (globalDupe) continue
+      }
+
       const old = existing.find(item => scopeKey(item.scope) === scopeKey(at) && item.title.toLocaleLowerCase() === candidate.title.toLocaleLowerCase())
       const now = this.now()
       if (old) {
@@ -179,18 +221,42 @@ export class EvoService {
     }
 
     if (parsed.skill && this.skillStore) {
-      const now = this.now()
-      const oldSkill = existingSkills.find(item => item.name === parsed.skill!.name)
-      if (oldSkill) {
-        const item: SkillItem = { ...oldSkill, body: parsed.skill.body, updatedAt: now, source }
-        await this.skillStore.putSkill(item)
-        skillDelta.updated = item
-        await this.events.emit({ type: 'skill.updated', skill: item })
+      if (!isGlobalScope) {
+        const globalSkillDupe = globalSkills.find(item => item.name === parsed.skill!.name)
+        if (globalSkillDupe) {
+          await this.events.emit({ type: 'memory.reflected', turn: last, delta: memoryDelta })
+          if (this.store.appendReplay && memoryDelta.created.length + memoryDelta.updated.length > 0) {
+            const replayBatch = { memories: [...memoryDelta.created, ...memoryDelta.updated].map(m => ({ title: m.title, content: m.content, kind: m.kind })) }
+            await this.store.appendReplay(scope, replayBatch)
+          }
+          return { memories: memoryDelta, skill: skillDelta }
+        }
+      }
+
+      const skillBodyTexts = [
+        parsed.skill.body.purpose,
+        parsed.skill.body.trigger,
+        parsed.skill.body.steps,
+        parsed.skill.body.check,
+        parsed.skill.body.reflex ?? '',
+      ]
+      const skillScan = scanMultiple(skillBodyTexts)
+      if (skillScan.safe) {
+        const now = this.now()
+        const oldSkill = existingSkills.find(item => item.name === parsed.skill!.name)
+        if (oldSkill) {
+          const item: SkillItem = { ...oldSkill, body: parsed.skill.body, updatedAt: now, source }
+          await this.skillStore.putSkill(item)
+          skillDelta.updated = item
+          await this.events.emit({ type: 'skill.updated', skill: item })
+        } else {
+          const item: SkillItem = { name: parsed.skill.name, scope, body: parsed.skill.body, usageCount: 0, createdAt: now, updatedAt: now, source, dormant: false, promoted: false }
+          await this.skillStore.putSkill(item)
+          skillDelta.created = item
+          await this.events.emit({ type: 'skill.created', skill: item })
+        }
       } else {
-        const item: SkillItem = { name: parsed.skill.name, scope, body: parsed.skill.body, usageCount: 0, createdAt: now, updatedAt: now, source, dormant: false }
-        await this.skillStore.putSkill(item)
-        skillDelta.created = item
-        await this.events.emit({ type: 'skill.created', skill: item })
+        logCredentialSkip(`skill/${parsed.skill.name}`, skillScan)
       }
     }
 
@@ -223,6 +289,12 @@ export class EvoService {
     if (!this.skillStore) return
     await this.skillStore.incrementUsage(scope, name)
     if (lesson) {
+      const lessonScan = scanForCredentials(lesson)
+      if (!lessonScan.safe) {
+        logCredentialSkip(`lesson/${name}`, lessonScan)
+        await this.events.emit({ type: 'skill.used', scope, name })
+        return
+      }
       const lessonItem: SkillLesson = { text: lesson.trim(), createdAt: this.now() }
       await this.skillStore.addLesson(scope, name, lessonItem)
       await this.events.emit({ type: 'skill.used', scope, name, lesson })
