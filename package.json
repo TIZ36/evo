@@ -1,5 +1,5 @@
 {
-  "name": "evo",
+  "name": "@tiz36/evo",
   "version": "0.3.0",
   "description": "Provider-neutral evolving memory service and Cordis plugin for DeepSeek Harness",
   "type": "module",
@@ -112,5 +112,8 @@
   },
   "bin": {
     "evo-hook": "./dist/hook/cli.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

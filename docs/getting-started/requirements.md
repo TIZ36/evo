@@ -30,11 +30,11 @@ The Cordis plugin and core library work without Harness; the Harness-specific pi
 The project uses pnpm, but evo can be installed with any package manager:
 
 ```bash
-pnpm add evo
+pnpm add @tiz36/evo
 # or
-npm install evo
+npm install @tiz36/evo
 # or
-yarn add evo
+yarn add @tiz36/evo
 ```
 
 ## Platform Support

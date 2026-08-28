@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-08-28
 
+### Changed
+
+- npm package name is now `@tiz36/evo` because the unscoped name `evo` was already taken on npm.
+
 ### Added
 
 - First-class skills: procedural SOPs distinct from declarative memories, with 5-section format (Goal, Trigger, Steps, Verification, Lessons), SKILL.md catalog, and lessons learned tracking.
