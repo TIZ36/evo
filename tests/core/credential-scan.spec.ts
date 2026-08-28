@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { scanForCredentials, scanMultiple, type ScanResult } from '../../src/core/credential-scan.js'
+import { syntheticCredential, syntheticJwt } from '../helpers/synthetic-credential.js'
 
 describe('credential scanner', () => {
   describe('scanForCredentials', () => {
@@ -38,12 +39,12 @@ b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAA
 
     it('detects API keys with common prefixes', () => {
       const apiKeys = [
-        'sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234',
-        'AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe',
-        'ghp_1234567890abcdefghijklmnopqrstuvwxyzAB',
-        'gho_1234567890abcdefghijklmnopqrstuvwxyzAB',
-        'AKIAIOSFODNN7REALKEY1',
-        'npm_1234567890abcdefghijklmnopqrstuvwxyzAB',
+        syntheticCredential(['sk-proj-', 'abc123def456ghi789jkl012mno345pqr678stu901vwx234']),
+        syntheticCredential(['AIza', 'SyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe']),
+        syntheticCredential(['ghp_', '1234567890abcdefghijklmnopqrstuvwxyzAB']),
+        syntheticCredential(['gho_', '1234567890abcdefghijklmnopqrstuvwxyzAB']),
+        syntheticCredential(['AKIA', 'IOSFODNN7REALKEY1']),
+        syntheticCredential(['npm_', '1234567890abcdefghijklmnopqrstuvwxyzAB']),
       ]
 
       for (const key of apiKeys) {
@@ -54,7 +55,11 @@ b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAA
     })
 
     it('detects JWT tokens', () => {
-      const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.Gfx6VO9tcxwk6xqx9yYzSfebfeakZp5JYIgP_edcw_A'
+      const jwt = syntheticJwt(
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+        'eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0',
+        'Gfx6VO9tcxwk6xqx9yYzSfebfeakZp5JYIgP_edcw_A'
+      )
       const result = scanForCredentials(`Bearer ${jwt}`)
       expect(result.safe).toBe(false)
       expect(result.matches[0]?.type).toBe('jwt')
@@ -62,9 +67,9 @@ b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAA
 
     it('detects password patterns', () => {
       const patterns = [
-        'password="SuperSecret123!"',
-        'passwd: verysecretpassword',
-        'pwd=my_secure_password_here',
+        syntheticCredential(['password', '=', '"', 'SuperSecret123!', '"']),
+        syntheticCredential(['passwd', ': ', 'verysecretpassword']),
+        syntheticCredential(['pwd', '=', 'my_secure_password_here']),
       ]
 
       for (const pattern of patterns) {
@@ -113,7 +118,8 @@ Help users commit code properly.
     })
 
     it('provides redacted preview in matches', () => {
-      const content = 'key=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234'
+      const key = syntheticCredential(['sk-proj-', 'abc123def456ghi789jkl012mno345pqr678stu901vwx234'])
+      const content = `key=${key}`
       const result = scanForCredentials(content)
       expect(result.safe).toBe(false)
       expect(result.matches[0]?.preview).toMatch(/^sk-p\.\.\.x234$/)
@@ -136,7 +142,7 @@ Help users commit code properly.
     it('scans multiple text fields', () => {
       const texts = [
         'Normal purpose text',
-        'Steps: 1. Do something\n2. sk-real-abc123def456ghi789jkl012mno345pqr678',
+        syntheticCredential(['Steps: 1. Do something\n2. sk-real-', 'abc123def456ghi789jkl012mno345pqr678']),
         'Verification looks good',
       ]
       const result = scanMultiple(texts)
@@ -157,8 +163,8 @@ Help users commit code properly.
 
     it('detects credentials across multiple fields', () => {
       const texts = [
-        'password: myActualPassword123',
-        'Also contains ghp_1234567890abcdefghijklmnopqrstuvwxyzAB',
+        syntheticCredential(['password', ': ', 'myActualPassword123']),
+        syntheticCredential(['Also contains ghp_', '1234567890abcdefghijklmnopqrstuvwxyzAB']),
       ]
       const result = scanMultiple(texts)
       expect(result.safe).toBe(false)
@@ -183,13 +189,16 @@ const apiKey = process.env.API_KEY // Never hardcode: sk-test-xxx
     })
 
     it('handles overlapping patterns', () => {
-      const content = 'sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234'
+      const content = syntheticCredential(['sk-proj-', 'abc123def456ghi789jkl012mno345pqr678stu901vwx234'])
       const result = scanForCredentials(content)
       expect(result.matches).toHaveLength(1)
     })
 
     it('detects base64 encoded secrets', () => {
-      const longBase64 = 'QWxhZGRpbjpvcGVuIHNlc2FtZQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQI='
+      const longBase64 = syntheticCredential([
+        'QWxhZGRpbjpvcGVuIHNlc2FtZQ',
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQI='
+      ])
       const result = scanForCredentials(longBase64)
       expect(result.safe).toBe(false)
       expect(result.matches[0]?.type).toBe('encoded-secret')
