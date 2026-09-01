@@ -491,37 +491,38 @@ window.__ModuleLoader__.load({
           'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
           'animation:evo-skel 1.4s var(--ds-ease-in-out,ease-out) infinite}',
 
-        // ── mode toggle ──────────────────────────────────────────────────
-        '.evo-modes{display:flex;gap:4px;margin:0 0 16px}',
-        '.evo-mode{height:28px;padding:0 14px;border:1px solid transparent;background:transparent;' +
-          'color:var(--dsw-alias-label-tertiary,#8a8a8a);border-radius:7px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;' +
-          'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out),border-color .15s var(--ds-ease-in-out,ease-out)}',
+        // ── mode toggle: two sections of one notebook, not two apps ─────
+        '.evo-modes{display:inline-flex;gap:0;padding:2px;margin:0 0 16px;' +
+          'background:var(--dsw-alias-bg-layer-0,#fafafa);border:1px solid var(--dsw-alias-border-l1,#e4e4e4);border-radius:7px}',
+        '.evo-mode{height:26px;padding:0 14px;border:none;background:transparent;' +
+          'color:var(--dsw-alias-label-tertiary,#8a8a8a);border-radius:5px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;' +
+          'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out)}',
         '.evo-mode:hover{color:var(--dsw-alias-label-primary,#262626)}',
         '.evo-mode:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}',
-        '.evo-mode[data-active=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
-          'border-color:var(--dsw-alias-border-l1,#e4e4e4);color:var(--dsw-alias-label-primary,#262626)}',
+        '.evo-mode[data-active=true]{background:var(--dsw-alias-bg-layer-1,#fff);' +
+          'box-shadow:0 1px 2px rgba(0,0,0,.06);color:var(--dsw-alias-label-primary,#262626)}',
 
-        // ── skills list ─────────────────────────────────────────────────
-        '.evo-skill{display:block;width:100%;border:none;background:transparent;color:inherit;font:inherit;text-align:left;' +
-          'cursor:pointer;padding:10px 12px;margin:0 -12px;width:calc(100% + 24px);border-radius:8px;' +
-          'border-bottom:1px solid var(--dsw-alias-border-l1,#e4e4e4);' +
+        // ── skills list: same notebook structure as Journal ─────────────
+        // Timeline with hairline + dots, passages not rows, typographic badges.
+        '.evo-skill-stream{position:relative;padding-left:22px}',
+        '.evo-skill-stream::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:1px;' +
+          'background:var(--dsw-alias-border-l2,#d8d8d8)}',
+        '.evo-skill{position:relative;display:block;width:100%;border:none;background:transparent;color:inherit;' +
+          'font:inherit;text-align:left;padding:10px;margin:0 0 2px -10px;border-radius:8px;cursor:pointer;' +
           'transition:background .15s var(--ds-ease-in-out,ease-out)}',
-        '.evo-skill:last-child{border-bottom:none}',
         '.evo-skill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}',
         '.evo-skill:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:-2px}',
-        '.evo-skill-top{display:flex;align-items:center;gap:8px;margin:0 0 4px}',
+        '.evo-skill::before{content:"";position:absolute;left:-13px;top:19px;width:5px;height:5px;border-radius:50%;' +
+          'background:var(--dsw-alias-label-tertiary,#8a8a8a)}',
+        '.evo-skill-top{display:flex;align-items:center;gap:8px;margin:0 0 5px}',
         '.evo-skill-name{font-size:13.5px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#262626);' +
           'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-        '.evo-skill-badge{flex:none;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;line-height:14px;' +
-          'letter-spacing:.05em;text-transform:uppercase}',
-        '.evo-skill-badge.promoted{color:var(--dsw-alias-state-business-primary,#4a9eff);' +
-          'background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4a9eff) 12%,transparent)}',
-        '.evo-skill-badge.dormant{color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
-          'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}',
-        '.evo-skill-trigger{font-size:13px;line-height:1.55;color:var(--dsw-alias-label-secondary,#555);' +
-          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60ch;margin:0 0 6px}',
-        '.evo-skill-meta{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:11px;line-height:16px;' +
+        '.evo-skill-trigger{margin:0 0 7px;max-width:68ch;font-size:13.5px;line-height:1.65;' +
+          'color:var(--dsw-alias-label-secondary,#555);display:-webkit-box;-webkit-line-clamp:2;' +
+          '-webkit-box-orient:vertical;overflow:hidden}',
+        '.evo-skill-meta{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:11px;line-height:16px;' +
           'color:var(--dsw-alias-label-tertiary,#8a8a8a);font-variant-numeric:tabular-nums}',
+        '.evo-skill-meta .evo-skill-scope{color:var(--dsw-alias-label-secondary,#555)}',
         '.evo-skill-meta .path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;' +
           'color:var(--dsw-alias-label-tertiary,#8a8a8a);opacity:.8}',
         '.evo-skill-meta .dot{opacity:.45}',
@@ -532,19 +533,23 @@ window.__ModuleLoader__.load({
           'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
         '.evo-backlog .n{font-weight:600;color:var(--dsw-alias-label-secondary,#555);font-variant-numeric:tabular-nums}',
 
-        // ── composer chip + dock ──────────────────────────────────────────
-        '.evo-chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:none;' +
-          'background:transparent;border-radius:7px;cursor:pointer;color:var(--dsw-alias-label-secondary,#555);' +
+        // ── composer chip: typographic tool-row button ────────────────────
+        // The word "evo" is the control. No icon. Idle = quiet tertiary.
+        // Busy = coral accent on the word. Error = host error color.
+        '.evo-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px;border:none;' +
+          'background:transparent;border-radius:6px;cursor:pointer;' +
           'font:inherit;font-size:12px;font-weight:500;' +
-          'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out),transform .1s ease-out}',
-        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,#262626)}',
-        '.evo-chip:active{transform:scale(.96)}',
-        '.evo-chip:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:2px}',
-        '.evo-chip[data-state=error]{color:var(--dsw-alias-state-error-primary,#e5484d)}',
-        '.evo-chip-sub{opacity:.55}',
+          'transition:background .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}',
+        '.evo-chip:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}',
+        '.evo-chip-label{color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
+          'transition:color .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-chip:hover .evo-chip-label{color:var(--dsw-alias-label-secondary,#555)}',
+        '.evo-chip[data-state=busy] .evo-chip-label{color:var(--evo-accent,#ff5c5c)}',
+        '.evo-chip[data-state=error] .evo-chip-label{color:var(--dsw-alias-state-error-primary,#e5484d)}',
         '.evo-chip-receipt{color:var(--evo-accent,#ff5c5c);font-weight:600;font-variant-numeric:tabular-nums;' +
           'animation:evo-receipt-in .4s var(--ds-ease-in-out,ease-out)}',
-        '.evo-dock{display:flex;align-items:center;gap:7px;padding:4px 0;font-size:11px;line-height:18px;' +
+        '.evo-dock{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;line-height:16px;' +
           'color:var(--dsw-alias-label-tertiary,#8a8a8a);animation:evo-fade-in .24s var(--ds-ease-in-out,ease-out)}',
 
         // Reduced motion keeps state legible without the movement: busy still
@@ -674,26 +679,28 @@ window.__ModuleLoader__.load({
     }
 
     // ── Skills ─────────────────────────────────────────────────────────
+    /**
+     * Skill entry in the catalog. Same notebook structure as Journal: a passage
+     * with name, trigger excerpt, and provenance metadata. Source/status badges
+     * are typographic (uppercase, letter-spaced, neutral) — not emoji or chromatic.
+     */
     function SkillRow(props) {
       var skill = props.skill
-      var badges = []
-      if (skill.source === 'human') badges.push(h('span', { key: 's', className: 'evo-skill-badge human' }, '📝 human'))
-      if (skill.source === 'disk') badges.push(h('span', { key: 's', className: 'evo-skill-badge disk' }, '📁 disk'))
-      if (skill.promoted) badges.push(h('span', { key: 'p', className: 'evo-skill-badge promoted' }, '★ promoted'))
-      if (skill.dormant) badges.push(h('span', { key: 'd', className: 'evo-skill-badge dormant' }, 'dormant'))
       return h('button', {
         className: 'evo-skill',
         onClick: function () { props.onSelect && props.onSelect(skill) },
         title: skill.trigger,
       },
         h('div', { className: 'evo-skill-top' },
-          h('span', { className: 'evo-skill-name' }, skill.name),
-          badges),
+          h('span', { className: 'evo-kind' }, skill.source || 'evo'),
+          h('span', { className: 'evo-skill-name' }, skill.name)),
         h('p', { className: 'evo-skill-trigger' }, skill.trigger),
         h('div', { className: 'evo-skill-meta' },
-          h('span', null, skill.usageCount === 1 ? '1 use' : skill.usageCount + ' uses'),
+          h('span', { className: 'evo-skill-scope' }, scopeLabel(skill.scope)),
           h('span', { className: 'dot' }, '·'),
-          h('span', { className: 'path' }, skill.path)))
+          h('span', null, skill.usageCount === 1 ? '1 use' : (skill.usageCount || 0) + ' uses'),
+          skill.path ? h('span', { className: 'dot' }, '·') : null,
+          skill.path ? h('span', { className: 'path' }, skill.path) : null))
     }
 
     function SkillsList(props) {
@@ -701,11 +708,12 @@ window.__ModuleLoader__.load({
       if (!skills.length) {
         return h('div', { className: 'evo-empty' },
           h(EvoMark, { size: 26, hollow: true }),
-          h('h3', null, 'No skills yet'),
-          h('p', null, 'evo distils reusable procedures into skills when it spots a repeatable workflow. ' +
-            'Skills are stored as SKILL.md files and applied automatically when their trigger matches.'))
+          h('h3', null, 'No skills in this scope'),
+          h('p', null, 'Skills come from two sources: SKILL.md files on disk that evo discovers, and ' +
+            'reusable procedures that evo distils when it spots a repeatable workflow. Once present, ' +
+            'they apply automatically when their trigger matches.'))
       }
-      return h('div', { className: 'evo-rows' },
+      return h('div', { className: 'evo-skill-stream' },
         skills.map(function (skill) {
           return h(SkillRow, { key: skill.name, skill: skill, onSelect: props.onSelect })
         }),
@@ -1281,8 +1289,9 @@ window.__ModuleLoader__.load({
 
     // ── composer chip + dock ──────────────────────────────────────────────
     /**
-     * Status indicator first, entry point second. It does not expand anything:
-     * memory is browsed in exactly one place, Settings → Memory.
+     * Typographic tool-row button. The word "evo" is the control — always
+     * visible, no icon. Tooltip carries context-count detail. Receipt shows
+     * `+N` briefly. Busy/error change the word colour.
      */
     function EvoChip() {
       var s = useEvoStatus()
@@ -1295,7 +1304,9 @@ window.__ModuleLoader__.load({
         }).catch(function () { /* tooltip simply stays generic */ })
       }, [])
 
-      var summary = s.counts ? 'root ' + s.counts.global + ' · cwd ' + s.counts.project + ' in context' : 'Memory in context'
+      var summary = s.counts
+        ? 'root ' + s.counts.global + ' · cwd ' + s.counts.project + ' in context'
+        : 'evo memory'
       var label = !s.reachable
         ? 'Memory service unreachable'
         : s.receipt
@@ -1310,13 +1321,10 @@ window.__ModuleLoader__.load({
         onClick: openMemorySettings,
         'aria-label': 'evo memory — ' + label,
       },
-        h(EvoMark, { size: 15, busy: s.busy }),
-        h('span', null, 'evo'),
-        !s.reachable
-          ? h('span', { className: 'evo-chip-sub' }, 'unreachable')
-          : s.receipt
-            ? h('span', { className: 'evo-chip-receipt' }, '+' + s.receipt)
-            : h('span', { className: 'evo-chip-sub' }, 'memory'))
+        h('span', { className: 'evo-chip-label' }, 'evo'),
+        s.receipt
+          ? h('span', { className: 'evo-chip-receipt' }, '+' + s.receipt)
+          : null)
 
       return Tooltip ? h(Tooltip, { label: label, side: 'top' }, button) : button
     }
