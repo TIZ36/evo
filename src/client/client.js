@@ -533,18 +533,20 @@ window.__ModuleLoader__.load({
           'background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
         '.evo-backlog .n{font-weight:600;color:var(--dsw-alias-label-secondary,#555);font-variant-numeric:tabular-nums}',
 
-        // ── composer chip: parasitic tool-row control ─────────────────────
-        // Idle = almost invisible. Capsule mark is the button. No "memory"
-        // subtitle, no border, no fill. Matches host tool-row aesthetics.
-        '.evo-chip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 6px;border:none;' +
-          'background:transparent;border-radius:6px;cursor:pointer;color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
-          'font:inherit;font-size:11px;font-weight:500;' +
-          'transition:background .15s var(--ds-ease-in-out,ease-out),color .15s var(--ds-ease-in-out,ease-out)}',
-        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));' +
-          'color:var(--dsw-alias-label-secondary,#555)}',
+        // ── composer chip: typographic tool-row button ────────────────────
+        // The word "evo" is the control. No icon. Idle = quiet tertiary.
+        // Busy = coral accent on the word. Error = host error color.
+        '.evo-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px;border:none;' +
+          'background:transparent;border-radius:6px;cursor:pointer;' +
+          'font:inherit;font-size:12px;font-weight:500;' +
+          'transition:background .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}',
         '.evo-chip:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4a9eff);outline-offset:1px}',
-        '.evo-chip[data-state=error]{color:var(--dsw-alias-state-error-primary,#e5484d)}',
-        '.evo-chip[data-state=error] .evo-glass{color:var(--dsw-alias-state-error-primary,#e5484d)}',
+        '.evo-chip-label{color:var(--dsw-alias-label-tertiary,#8a8a8a);' +
+          'transition:color .15s var(--ds-ease-in-out,ease-out)}',
+        '.evo-chip:hover .evo-chip-label{color:var(--dsw-alias-label-secondary,#555)}',
+        '.evo-chip[data-state=busy] .evo-chip-label{color:var(--evo-accent,#ff5c5c)}',
+        '.evo-chip[data-state=error] .evo-chip-label{color:var(--dsw-alias-state-error-primary,#e5484d)}',
         '.evo-chip-receipt{color:var(--evo-accent,#ff5c5c);font-weight:600;font-variant-numeric:tabular-nums;' +
           'animation:evo-receipt-in .4s var(--ds-ease-in-out,ease-out)}',
         '.evo-dock{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;line-height:16px;' +
@@ -1287,9 +1289,9 @@ window.__ModuleLoader__.load({
 
     // ── composer chip + dock ──────────────────────────────────────────────
     /**
-     * Parasitic tool-row control. Idle = almost invisible: capsule mark is the
-     * button, no subtitle, no border. Tooltip carries the context-count detail.
-     * Only shows extra chrome on receipt (`+N`) or error.
+     * Typographic tool-row button. The word "evo" is the control — always
+     * visible, no icon. Tooltip carries context-count detail. Receipt shows
+     * `+N` briefly. Busy/error change the word colour.
      */
     function EvoChip() {
       var s = useEvoStatus()
@@ -1313,14 +1315,13 @@ window.__ModuleLoader__.load({
             ? 'Distilling this turn into memory…'
             : summary
 
-      // Idle: capsule only. Receipt: capsule + count. Error: capsule in error color.
       var button = h('button', {
         className: 'evo-chip',
         'data-state': !s.reachable ? 'error' : s.busy ? 'busy' : 'idle',
         onClick: openMemorySettings,
         'aria-label': 'evo memory — ' + label,
       },
-        h(EvoMark, { size: 14, busy: s.busy }),
+        h('span', { className: 'evo-chip-label' }, 'evo'),
         s.receipt
           ? h('span', { className: 'evo-chip-receipt' }, '+' + s.receipt)
           : null)
