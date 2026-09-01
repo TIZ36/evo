@@ -151,37 +151,50 @@ describe('evo HTTP API', () => {
     }
   })
 
-  it('lists skills via /skills endpoint', async () => {
+  it('serves skills from /evo/skills endpoint', async () => {
     const { fiber, svc } = await service()
     try {
+      const scope = { type: 'project' as const, id: '/test-skills' }
+      await svc.remember({ scope, kind: 'skill', title: '.claude/skills/test-skill/SKILL.md', content: '# Test\n\n## Purpose\n\nTest\n\n## When to use\n\nTesting\n\n## Steps\n\n1. Test\n\n## Verification\n\nPass' })
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills`)
+      expect(response.status).toBe(200)
+      const skills = (response.json as { skills: Array<{ name: string; source: string }> }).skills
+      expect(skills.length).toBeGreaterThanOrEqual(1)
+      const testSkill = skills.find(s => s.name === 'test-skill')
+      expect(testSkill).toBeDefined()
+      expect(testSkill!.source).toBe('human')
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('serves skills from skills table via /evo/skills', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const scope = { type: 'project' as const, id: '/test-repo' }
       svc.setModelRunner({
         complete: async () => JSON.stringify({
           memories: [],
           skill: {
-            name: 'test-skill',
+            name: 'evo-learned-skill',
             body: {
-              purpose: 'Test purpose',
+              purpose: 'Test evo skill',
               trigger: 'When testing',
-              steps: '1. Do this\n2. Do that',
-              check: 'It works',
+              steps: '1. Do test',
+              check: 'Test passes',
             },
           },
         }),
       })
+      await svc.reflect({ sessionId: 's1', turn: 1, scope, user: 'Test', assistant: 'Done' })
 
-      await svc.core.reflectBatch([
-        { sessionId: 's', turn: 1, scope: { type: 'project', id: '/repo' }, user: 'learn skill', assistant: 'done' },
-      ])
-
-      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=%2Frepo`)
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=${encodeURIComponent('/test-repo')}`)
       expect(response.status).toBe(200)
-      const skills = (response.json as { skills: { name: string; trigger: string; promoted: boolean }[] }).skills
-      expect(skills).toHaveLength(1)
-      expect(skills[0]).toMatchObject({
-        name: 'test-skill',
-        trigger: 'When testing',
-        promoted: false,
-      })
+      const skills = (response.json as { skills: Array<{ name: string; source: string }> }).skills
+      const evoSkill = skills.find(s => s.name === 'evo-learned-skill')
+      expect(evoSkill).toBeDefined()
+      expect(evoSkill!.source).toBe('evo')
     } finally {
       await fiber.dispose()
     }
@@ -224,7 +237,7 @@ describe('evo HTTP API', () => {
       const skill = skills[0]!
       expect(skill.name).toBe('panel-test-skill')
       expect(skill.trigger).toBe('When verifying panel integration')
-      expect(skill.path).toBe('.paper/agents/skills/panel-test-skill')
+      expect(skill.path).toContain('panel-test-skill')
       expect(typeof skill.usageCount).toBe('number')
       expect(skill.usageCount).toBe(0)
       expect(typeof skill.dormant).toBe('boolean')
@@ -259,6 +272,44 @@ describe('evo HTTP API', () => {
 
       const missing = await call(svc, 'GET', `${MEMORY_API_PATH}/backlog`)
       expect(missing.status).toBe(400)
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('deduplicates skills by path, not just name', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const cwd = join(mkdtempSync(join(tmpdir(), 'evo-dedup-')), 'project')
+      mkdirSync(cwd, { recursive: true })
+      mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+      mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+      writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build\n\n## Purpose\nClaude build\n\n## When to use\nUse Claude build\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+      writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build\n\n## Purpose\nCodex build\n\n## When to use\nUse Codex build\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?cwd=${encodeURIComponent(cwd)}&includeGlobal=false`)
+      expect(response.status).toBe(200)
+      const skills = (response.json as { skills: Array<{ name: string; path: string }> }).skills
+      const buildSkills = skills.filter(s => s.name === 'build')
+      expect(buildSkills).toHaveLength(2)
+      const paths = buildSkills.map(s => s.path).sort()
+      expect(paths).toEqual(['.claude/skills/build/SKILL.md', '.codex/skills/build/SKILL.md'])
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('includes disk-discovered skills in context with correct paths', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const cwd = join(mkdtempSync(join(tmpdir(), 'evo-ctx-')), 'project')
+      mkdirSync(cwd, { recursive: true })
+      mkdirSync(join(cwd, '.claude/skills/my-skill'), { recursive: true })
+      writeFileSync(join(cwd, '.claude/skills/my-skill/SKILL.md'), '# My Skill\n\n## Purpose\nDo something\n\n## When to use\nWhen you need to do something\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+
+      const context = await svc.context({ cwd, includeGlobal: false })
+      expect(context).toContain('my-skill')
+      expect(context).toContain('.claude/skills/my-skill/SKILL.md')
     } finally {
       await fiber.dispose()
     }

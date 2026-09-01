@@ -677,6 +677,8 @@ window.__ModuleLoader__.load({
     function SkillRow(props) {
       var skill = props.skill
       var badges = []
+      if (skill.source === 'human') badges.push(h('span', { key: 's', className: 'evo-skill-badge human' }, '📝 human'))
+      if (skill.source === 'disk') badges.push(h('span', { key: 's', className: 'evo-skill-badge disk' }, '📁 disk'))
       if (skill.promoted) badges.push(h('span', { key: 'p', className: 'evo-skill-badge promoted' }, '★ promoted'))
       if (skill.dormant) badges.push(h('span', { key: 'd', className: 'evo-skill-badge dormant' }, 'dormant'))
       return h('button', {
@@ -882,6 +884,7 @@ window.__ModuleLoader__.load({
         var params = ['limit=' + PAGE_LIMIT, 'includeDormant=true']
         if (opts.scopeKey && opts.scopeKey !== 'all') params.push('scopeKey=' + encodeURIComponent(opts.scopeKey))
         if (opts.query) params.push('text=' + encodeURIComponent(opts.query))
+        if (opts.cwd) params.push('cwd=' + encodeURIComponent(opts.cwd))
         return apiOptional('/skills?' + params.join('&'))
       }, [])
 
@@ -896,7 +899,8 @@ window.__ModuleLoader__.load({
 
       var loadSkills = useCallback(function () {
         patch({ skillsLoading: true, skillsError: '' })
-        fetchSkills({ scopeKey: s.scopeKey, query: s.query }).then(function (json) {
+        var cwd = s.selectedScope && s.selectedScope.type === 'project' ? s.selectedScope.id : null
+        fetchSkills({ scopeKey: s.scopeKey, query: s.query, cwd: cwd }).then(function (json) {
           if (json === null) {
             patch({ skillsAvailable: false, skills: [], skillsLoading: false })
             return
@@ -905,7 +909,7 @@ window.__ModuleLoader__.load({
         }).catch(function (err) {
           patch({ skillsError: String(err.message || err), skillsLoading: false })
         })
-      }, [patch, fetchSkills, s.scopeKey, s.query])
+      }, [patch, fetchSkills, s.scopeKey, s.query, s.selectedScope])
 
       var loadAll = useCallback(function () {
         patch({ loading: true, error: '' })

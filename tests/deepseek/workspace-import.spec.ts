@@ -56,4 +56,47 @@ describe('workspace import trigger', () => {
     await fiberAdapter.dispose()
     await fiberService.dispose()
   })
+
+  it('assemble includes project disk SKILL.md files in context', async () => {
+    const cwd = join(mkdtempSync(join(tmpdir(), 'evo-skill-ctx-')), 'project')
+    mkdirSync(cwd, { recursive: true })
+    mkdirSync(join(cwd, '.claude/skills/my-build-skill'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/my-build-skill/SKILL.md'), `# Build Skill
+
+## Purpose
+
+Build the project.
+
+## When to use
+
+When you need to build the project.
+
+## Steps
+
+1. Run npm build
+
+## Verification
+
+Check dist folder exists.
+`)
+
+    const ctx = new Context()
+    ctx.provide('llm', { stream: async function* () {} })
+    ctx.provide('systemPrompt', {})
+    const fiberService = await ctx.plugin(evoPlugin, { databasePath: join(cwd, '..', 'memory.db') })
+    const fiberAdapter = await ctx.plugin(deepseekPlugin, { provider: 'x', model: 'y', reflect: false, workspaceImport: true })
+
+    const session = Session.create('s3' as never, [], { version: SESSION_FORMAT_VERSION, id: 's3', createdAt: 1, cwd } as never)
+    const assembly = { sections: [], contexts: [], tools: [], variables: {} } as PromptAssembly
+    const assembleContext = { agent: { session } } as unknown as AssembleContext
+    const result = await ctx.waterfall('system-prompt/assemble', assembly, assembleContext, () => Promise.resolve(assembly))
+
+    const evoContext = result.contexts.find(c => c.name === 'evo')
+    expect(evoContext).toBeDefined()
+    expect(evoContext!.text).toContain('my-build-skill')
+    expect(evoContext!.text).toContain('.claude/skills/my-build-skill/SKILL.md')
+
+    await fiberAdapter.dispose()
+    await fiberService.dispose()
+  })
 })

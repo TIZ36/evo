@@ -72,7 +72,7 @@ export function apply(ctx: Context, config: Config): void {
     if (config.workspaceImport !== false && session.header.cwd) {
       await ensureWorkspaceImported(session.header.cwd)
     }
-    const text = await ctx.evo.context({ scopes: scopesForSession(session), limit: config.recallLimit ?? 40, maxChars: config.maxContextChars ?? 6000 })
+    const text = await ctx.evo.context({ scopes: scopesForSession(session), limit: config.recallLimit ?? 40, maxChars: config.maxContextChars ?? 6000, cwd: session.header.cwd })
     if (!text) return result
     return { ...result, contexts: [...result.contexts, { name: 'evo', text }] }
   })
