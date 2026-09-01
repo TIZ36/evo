@@ -16,6 +16,14 @@ import { formatNotice, takeNotice, writeNotice } from './notice.js'
 import { canonicalPath, hookScopes, projectScope } from './scope.js'
 import { batchTurns, enqueue, isDue, takeDue, type QueueLimits, type QueuedBatch } from './queue.js'
 import { extractLatestTurn, parseTranscript, type TurnDraft } from './transcript.js'
+import {
+  formatCatalog,
+  memoriesToCatalogEntries,
+  mergeSkillsWithDisk,
+  skillsToCatalogEntries,
+  type CatalogResult,
+  type CatalogSection,
+} from './catalog.js'
 
 /**
  * The subset of the hook payload evo reads. Claude Code and Codex send the same
@@ -148,6 +156,57 @@ export function openService(): { service: EvoService; store: SqliteMemoryStore }
   return { service: new EvoService({ store, skillStore: store, events: store }), store }
 }
 
+// ── list subcommands ──────────────────────────────────────────────────────
+
+/**
+ * Build the full catalog of skills and memories for the given scopes.
+ * Merges database entries with disk-discovered SKILL.md files.
+ */
+export async function buildCatalog(service: EvoService, store: SqliteMemoryStore, cwd?: string): Promise<CatalogResult> {
+  const scopes = hookScopes(cwd)
+  const projectRoot = cwd ? canonicalPath(cwd) : undefined
+
+  const dbSkills = await service.listSkills({ scopes, includeDormant: true, limit: 1000 })
+  const skillSummaries = mergeSkillsWithDisk(dbSkills, projectRoot)
+  const skills = skillsToCatalogEntries(skillSummaries)
+
+  const memories = await service.recall({ scopes, limit: 1000 })
+  const memoryEntries = memoriesToCatalogEntries(memories)
+
+  return { skills, memories: memoryEntries }
+}
+
+/**
+ * Run the list subcommand: output catalog to stdout.
+ */
+export async function runList(section: CatalogSection, cwd?: string): Promise<void> {
+  const { service, store } = openService()
+  try {
+    const catalog = await buildCatalog(service, store, cwd)
+    const output = formatCatalog(catalog, section)
+    process.stdout.write(output)
+  } finally {
+    store.close?.()
+  }
+}
+
+/** Parse --cwd=<path> or --cwd <path> from args, return the rest and the cwd value. */
+function parseCwdArg(args: string[]): { cwd: string | undefined; rest: string[] } {
+  const rest: string[] = []
+  let cwd: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--cwd' && args[i + 1]) {
+      cwd = args[++i]
+    } else if (arg.startsWith('--cwd=')) {
+      cwd = arg.slice(6)
+    } else {
+      rest.push(arg)
+    }
+  }
+  return { cwd, rest }
+}
+
 // ── entry ─────────────────────────────────────────────────────────────────
 const selfPath = fileURLToPath(import.meta.url)
 
@@ -157,9 +216,16 @@ async function main(): Promise<void> {
   if (process.env.EVO_HOOK_DISABLE === '1') return
 
   const config = hookConfig()
-  const [mode, payloadPath] = process.argv.slice(2)
+  const { cwd: argCwd, rest: args } = parseCwdArg(process.argv.slice(2))
+  const [mode, payloadPath] = args
 
   if (mode === 'flush' && payloadPath) return runDetachedFlush(payloadPath, config)
+
+  if (mode === 'list' || mode === 'list-skills' || mode === 'list-memory') {
+    const section: CatalogSection = mode === 'list-skills' ? 'skills' : mode === 'list-memory' ? 'memory' : 'all'
+    const cwd = argCwd ?? process.cwd()
+    return runList(section, cwd)
+  }
 
   const raw = readFileSync(0, 'utf8')
   if (!raw.trim()) return

@@ -20,6 +20,27 @@ The installer builds the package and patches `~/.claude/settings.json` (override
 
 **Use the marketplace or the installer, not both** — running both makes evo execute twice per turn.
 
+## Browse Memory and Skills
+
+Use the slash commands to browse evo's catalog without opening DeepSeek Harness:
+
+| Command | Description |
+| --- | --- |
+| `/evo` | Show full catalog (Skills + Memory) |
+| `/evo-skills` | Show Skills only |
+| `/evo-memory` | Show Memory only |
+
+The output shows each entry with its name, trigger/description, real file path (for disk-discovered SKILL.md files, including Chinese/Unicode names), scope (global or project), source, and usage count. Promoted skills appear first.
+
+You can also run the CLI directly:
+
+```bash
+evo-hook list           # Full catalog
+evo-hook list-skills    # Skills only
+evo-hook list-memory    # Memory only
+evo-hook list --cwd=/path/to/project  # Specify project directory
+```
+
 ## Manual Configuration
 
 Add to `~/.claude/settings.json` or a project's `.claude/settings.json`:

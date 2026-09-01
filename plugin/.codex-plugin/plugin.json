@@ -8,13 +8,15 @@
   "keywords": [
     "memory",
     "recall",
-    "hooks"
+    "hooks",
+    "skills"
   ],
   "hooks": "./hooks/hooks.json",
+  "skills": "./skills/",
   "interface": {
     "displayName": "evo",
     "shortDescription": "Memory that recalls before the model thinks",
-    "longDescription": "Recalls durable global and project memory into every session, and distils each finished turn back into it. Storage is one local SQLite file; reflection runs through the Codex CLI you already have, so evo needs no API key of its own.",
+    "longDescription": "Recalls durable global and project memory into every session, and distils each finished turn back into it. Storage is one local SQLite file; reflection runs through the Codex CLI you already have, so evo needs no API key of its own. Use $evo-browse to list all remembered skills and memories.",
     "developerName": "Paper team",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Automation"]

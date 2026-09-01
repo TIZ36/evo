@@ -20,6 +20,27 @@ The installer writes `~/.codex/hooks.json` (override with `CODEX_HOME`). Codex a
 
 **Use the marketplace or the installer, not both.**
 
+## Browse Memory and Skills
+
+Use the `$evo-browse` skill to browse evo's catalog without opening DeepSeek Harness:
+
+```
+$evo-browse
+```
+
+Or ask directly: "Show me evo's skills" / "List what evo remembers"
+
+The output shows each entry with its name, trigger/description, real file path (for disk-discovered SKILL.md files, including Chinese/Unicode names), scope (global or project), source, and usage count. Promoted skills appear first.
+
+You can also run the CLI directly in any terminal:
+
+```bash
+evo-hook list           # Full catalog
+evo-hook list-skills    # Skills only
+evo-hook list-memory    # Memory only
+evo-hook list --cwd=/path/to/project  # Specify project directory
+```
+
 ## Differences from Claude Code
 
 Three things differ from Claude Code, and evo handles all automatically:
