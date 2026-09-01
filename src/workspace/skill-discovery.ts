@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import type { MemoryItem, MemoryScope, SkillBody, SkillItem } from '../core/types.js'
+import type { SkillCatalogEntry } from '../core/prompt.js'
 import { stripFrontmatter } from './importer.js'
 
 /** Summary returned by the skills API for display in the Skills tab. */
@@ -15,6 +16,9 @@ export type SkillSummary = {
   source: 'evo' | 'human' | 'disk'
   scope: MemoryScope
 }
+
+/** Re-export for use in context building */
+export type { SkillCatalogEntry } from '../core/prompt.js'
 
 /** Skill directories relative to a root (project or home). */
 export const SKILL_BASES = [
@@ -34,18 +38,44 @@ const MAX_FILES = 500
 
 /**
  * Convert a SkillItem (from skills table) to a SkillSummary.
+ * Uses source.path when available (from disk-hydrated skills) for correct paths.
  */
 export function skillItemToSummary(skill: SkillItem, basePath = '.paper/agents/skills'): SkillSummary {
+  const sourcePath = skill.source?.path as string | undefined
+  const isDiskImport = skill.source?.runtime === 'disk-import' || skill.source?.runtime === 'disk-hydrate'
   return {
     name: skill.name,
     trigger: extractTriggerSummary(skill.body.trigger),
     usageCount: skill.usageCount,
     promoted: skill.promoted ?? false,
     dormant: skill.dormant ?? false,
-    path: `${basePath}/${skill.name}/SKILL.md`,
-    source: 'evo',
+    path: sourcePath ? toDisplayPath(sourcePath) : `${basePath}/${skill.name}/SKILL.md`,
+    source: isDiskImport ? 'human' : 'evo',
     scope: skill.scope,
   }
+}
+
+/**
+ * Convert a SkillItem to a SkillCatalogEntry for context injection.
+ * Uses the real path so the model can Read the file.
+ */
+export function skillItemToCatalogEntry(skill: SkillItem): SkillCatalogEntry {
+  const sourcePath = skill.source?.path as string | undefined
+  return {
+    name: skill.name,
+    trigger: extractTriggerSummary(skill.body.trigger),
+    path: sourcePath ?? `.paper/agents/skills/${skill.name}/SKILL.md`,
+    promoted: skill.promoted,
+  }
+}
+
+/** Convert absolute path to display path (~/ for home, relative for project) */
+function toDisplayPath(absPath: string): string {
+  const home = homedir()
+  if (absPath.startsWith(home + '/')) {
+    return '~/' + absPath.slice(home.length + 1)
+  }
+  return absPath
 }
 
 /** Threshold for a memory-based skill to be considered "promoted" (high usage). */
@@ -83,10 +113,11 @@ export function discoverSkillFiles(root: string, scope: MemoryScope): Array<{ su
       const content = readFileSafe(abs)
       if (!content) continue
       const parsed = parseSkillContent(stripFrontmatter(content))
+      const trigger = getTriggerFromParsedOrContent(parsed, content)
       results.push({
         summary: {
           name: extractSkillName(rel),
-          trigger: parsed ? extractTriggerSummary(parsed.trigger ?? '') : '',
+          trigger: extractTriggerSummary(trigger),
           usageCount: 0,
           promoted: false,
           dormant: false,
@@ -99,6 +130,65 @@ export function discoverSkillFiles(root: string, scope: MemoryScope): Array<{ su
     }
   }
   return results
+}
+
+/**
+ * Discover on-disk SKILL.md files and return catalog entries for context injection.
+ * Unlike discoverSkillFiles, this returns SkillCatalogEntry with the real path.
+ */
+export function discoverSkillCatalog(root: string): SkillCatalogEntry[] {
+  const results: SkillCatalogEntry[] = []
+  for (const { base } of SKILL_BASES) {
+    const dir = join(root, base)
+    if (!isDirectory(dir)) continue
+    for (const abs of collectSkillMd(dir)) {
+      const rel = relative(root, abs).split(sep).join('/')
+      const content = readFileSafe(abs)
+      if (!content) continue
+      const parsed = parseSkillContent(stripFrontmatter(content))
+      const trigger = getTriggerFromParsedOrContent(parsed, content)
+      results.push({
+        name: extractSkillName(rel),
+        trigger: extractTriggerSummary(trigger),
+        path: rel,
+        promoted: false,
+      })
+    }
+  }
+  return results
+}
+
+/**
+ * Discover global skill files and return catalog entries for context injection.
+ */
+export function discoverGlobalSkillCatalog(): SkillCatalogEntry[] {
+  const home = homedir()
+  const results: SkillCatalogEntry[] = []
+  for (const { base } of SKILL_BASES) {
+    const dir = join(home, base)
+    if (!isDirectory(dir)) continue
+    for (const abs of collectSkillMd(dir)) {
+      const rel = relative(home, abs).split(sep).join('/')
+      const content = readFileSafe(abs)
+      if (!content) continue
+      const parsed = parseSkillContent(stripFrontmatter(content))
+      const trigger = getTriggerFromParsedOrContent(parsed, content)
+      results.push({
+        name: extractSkillName(rel),
+        trigger: extractTriggerSummary(trigger),
+        path: `~/${rel}`,
+        promoted: false,
+      })
+    }
+  }
+  return results
+}
+
+/** Extract trigger from parsed content, or fallback to first non-empty line */
+function getTriggerFromParsedOrContent(parsed: Partial<SkillBody> | null, content: string): string {
+  if (parsed?.trigger) return parsed.trigger
+  const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#'))
+  return lines[0]?.trim() ?? ''
 }
 
 /**

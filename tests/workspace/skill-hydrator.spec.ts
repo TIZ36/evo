@@ -143,7 +143,7 @@ describe('SkillHydrator', () => {
     }
   })
 
-  it('ignores skills with incomplete sections', async () => {
+  it('creates skills from incomplete SKILL.md files with fallback content', async () => {
     const cwd = fixture()
     mkdirSync(join(cwd, '.claude/skills/incomplete'), { recursive: true })
     writeFileSync(join(cwd, '.claude/skills/incomplete/SKILL.md'), `# Incomplete
@@ -159,11 +159,15 @@ Only has purpose.
       const result = await hydrator.hydrateProject(cwd)
 
       expect(result.files).toBe(1)
-      expect(result.created).toBe(0)
+      expect(result.created).toBe(1)
 
       const scope: MemoryScope = { type: 'project', id: cwd }
       const skill = await store.getSkill(scope, 'incomplete')
-      expect(skill).toBeNull()
+      expect(skill).not.toBeNull()
+      expect(skill!.body.purpose).toContain('Only has purpose')
+      expect(skill!.body.trigger).toBeTruthy()
+      expect(skill!.body.steps).toBeTruthy()
+      expect(skill!.body.check).toBeTruthy()
     } finally {
       close()
       rmSync(cwd, { recursive: true, force: true })
@@ -196,7 +200,7 @@ Only has purpose.
     }
   })
 
-  it('ignores invalid skill names (not kebab-case)', async () => {
+  it('discovers non-kebab-case names but skips storing in table', async () => {
     const cwd = fixture()
     mkdirSync(join(cwd, '.claude/skills/InvalidName'), { recursive: true })
     writeFileSync(join(cwd, '.claude/skills/InvalidName/SKILL.md'), validSkillMd)
@@ -206,8 +210,12 @@ Only has purpose.
       const hydrator = new SkillHydrator(store)
       const result = await hydrator.hydrateProject(cwd)
 
-      expect(result.files).toBe(0)
+      expect(result.files).toBe(1)
       expect(result.created).toBe(0)
+
+      const scope: MemoryScope = { type: 'project', id: cwd }
+      const skill = await store.getSkill(scope, 'InvalidName')
+      expect(skill).toBeNull()
     } finally {
       close()
       rmSync(cwd, { recursive: true, force: true })

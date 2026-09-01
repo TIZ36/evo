@@ -30,6 +30,9 @@ const MAX_FILES = 500
  *
  * Human-written skills (from .claude/skills, .codex/skills, etc.) are marked with
  * source.runtime = 'disk-import' and are NOT evictable by evo reflection.
+ *
+ * Accepts skills with any name (including Chinese/Unicode) and incomplete bodies.
+ * L1 validation (kebab-case, 5-section) is only enforced for evo-written skills.
  */
 export class SkillHydrator {
   private readonly now: () => number
@@ -43,8 +46,11 @@ export class SkillHydrator {
    * Hydrate on-disk SKILL.md files from a project directory into the skills table.
    * Scans all SKILL_BASES directories (including .paper/agents/skills).
    *
-   * Skills are upserted by name. Human-written skills (non-.paper/agents/skills)
-   * are never overwritten by evo; .paper/agents/skills can be updated by evo.
+   * Skills are upserted by (scope, path) not just name, so same-named skills
+   * in different directories both survive.
+   *
+   * Human-written skills accept any name and incomplete bodies.
+   * .paper/agents/skills skills (evo-owned) require kebab-case names.
    */
   async hydrateProject(cwd: string, options: { force?: boolean } = {}): Promise<SkillHydrateResult> {
     const scope: MemoryScope = { type: 'project', id: cwd }
@@ -55,6 +61,7 @@ export class SkillHydrator {
     }
 
     const existing = await this.store.listSkills({ scopes: [scope], limit: 1000, includeDormant: true })
+    const existingByPath = new Map(existing.filter(s => s.source?.path).map(s => [s.source!.path as string, s]))
     const existingByName = new Map(existing.map(s => [s.name.toLowerCase(), s]))
 
     const discovered = this.discoverSkillFiles(cwd)
@@ -69,21 +76,16 @@ export class SkillHydrator {
       if (!content) continue
 
       const parsed = parseSkillContent(content)
-      if (!parsed?.purpose || !parsed?.trigger || !parsed?.steps || !parsed?.check) {
-        continue
-      }
-      const body: SkillBody = {
-        purpose: parsed.purpose,
-        trigger: parsed.trigger,
-        steps: parsed.steps,
-        check: parsed.check,
-        ...(parsed.reflex ? { reflex: parsed.reflex } : {}),
-      }
+      const body = buildSkillBody(parsed, content, name)
+      if (!body) continue
 
-      const nameKey = name.toLowerCase()
-      const old = existingByName.get(nameKey)
+      const old = existingByPath.get(abs) ?? existingByName.get(name.toLowerCase())
       const now = this.now()
       const source = { runtime: isEvoOwned ? 'disk-hydrate' : 'disk-import', path: abs }
+
+      if (!isValidSkillName(name)) {
+        continue
+      }
 
       if (old) {
         const oldIsHuman = !isEvoOwned && old.source?.runtime === 'disk-import'
@@ -114,6 +116,7 @@ export class SkillHydrator {
           updatedAt: now,
           source,
           dormant: false,
+          promoted: false,
         }
         await this.store.putSkill(item)
         created += 1
@@ -137,6 +140,7 @@ export class SkillHydrator {
 
     const home = homedir()
     const existing = await this.store.listSkills({ scopes: [scope], limit: 1000, includeDormant: true })
+    const existingByPath = new Map(existing.filter(s => s.source?.path).map(s => [s.source!.path as string, s]))
     const existingByName = new Map(existing.map(s => [s.name.toLowerCase(), s]))
 
     const discovered = this.discoverSkillFiles(home)
@@ -151,19 +155,14 @@ export class SkillHydrator {
       if (!content) continue
 
       const parsed = parseSkillContent(content)
-      if (!parsed?.purpose || !parsed?.trigger || !parsed?.steps || !parsed?.check) {
+      const body = buildSkillBody(parsed, content, name)
+      if (!body) continue
+
+      if (!isValidSkillName(name)) {
         continue
       }
-      const body: SkillBody = {
-        purpose: parsed.purpose,
-        trigger: parsed.trigger,
-        steps: parsed.steps,
-        check: parsed.check,
-        ...(parsed.reflex ? { reflex: parsed.reflex } : {}),
-      }
 
-      const nameKey = name.toLowerCase()
-      const old = existingByName.get(nameKey)
+      const old = existingByPath.get(abs) ?? existingByName.get(name.toLowerCase())
       const now = this.now()
       const source = { runtime: 'disk-import', path: abs }
 
@@ -191,6 +190,7 @@ export class SkillHydrator {
           updatedAt: now,
           source,
           dormant: false,
+          promoted: false,
         }
         await this.store.putSkill(item)
         created += 1
@@ -217,7 +217,8 @@ export class SkillHydrator {
 
         const rel = relative(root, abs).split(sep).join('/')
         const name = extractSkillName(rel)
-        if (!name || !isValidSkillName(name)) continue
+        if (!name) continue
+        if (isEvoOwned && !isValidSkillName(name)) continue
 
         discovered.push({ name, abs, rel, isEvoOwned })
       }
@@ -234,8 +235,35 @@ function extractSkillName(path: string): string {
   return ''
 }
 
+/** Kebab-case validation - only required for evo-owned skills */
 function isValidSkillName(name: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)
+}
+
+/**
+ * Build a SkillBody from parsed content, falling back to content-based defaults.
+ * Returns null only if we have no usable content at all.
+ */
+function buildSkillBody(parsed: Partial<SkillBody> | null, content: string, name: string): SkillBody | null {
+  const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#'))
+  const firstParagraph = lines.slice(0, 5).join('\n').trim() || content.slice(0, 500)
+
+  if (parsed?.purpose && parsed?.trigger && parsed?.steps && parsed?.check) {
+    return {
+      purpose: parsed.purpose,
+      trigger: parsed.trigger,
+      steps: parsed.steps,
+      check: parsed.check,
+      ...(parsed.reflex ? { reflex: parsed.reflex } : {}),
+    }
+  }
+
+  const trigger = parsed?.trigger || firstParagraph || `Use the ${name} skill when applicable`
+  const purpose = parsed?.purpose || `Skill: ${name}`
+  const steps = parsed?.steps || content
+  const check = parsed?.check || 'Verify the skill was applied correctly'
+
+  return { purpose, trigger, steps, check }
 }
 
 function collectSkillMd(dir: string): string[] {

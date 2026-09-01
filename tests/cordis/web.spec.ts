@@ -276,4 +276,42 @@ describe('evo HTTP API', () => {
       await fiber.dispose()
     }
   })
+
+  it('deduplicates skills by path, not just name', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const cwd = join(mkdtempSync(join(tmpdir(), 'evo-dedup-')), 'project')
+      mkdirSync(cwd, { recursive: true })
+      mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+      mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+      writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build\n\n## Purpose\nClaude build\n\n## When to use\nUse Claude build\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+      writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build\n\n## Purpose\nCodex build\n\n## When to use\nUse Codex build\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?cwd=${encodeURIComponent(cwd)}&includeGlobal=false`)
+      expect(response.status).toBe(200)
+      const skills = (response.json as { skills: Array<{ name: string; path: string }> }).skills
+      const buildSkills = skills.filter(s => s.name === 'build')
+      expect(buildSkills).toHaveLength(2)
+      const paths = buildSkills.map(s => s.path).sort()
+      expect(paths).toEqual(['.claude/skills/build/SKILL.md', '.codex/skills/build/SKILL.md'])
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('includes disk-discovered skills in context with correct paths', async () => {
+    const { fiber, svc } = await service()
+    try {
+      const cwd = join(mkdtempSync(join(tmpdir(), 'evo-ctx-')), 'project')
+      mkdirSync(cwd, { recursive: true })
+      mkdirSync(join(cwd, '.claude/skills/my-skill'), { recursive: true })
+      writeFileSync(join(cwd, '.claude/skills/my-skill/SKILL.md'), '# My Skill\n\n## Purpose\nDo something\n\n## When to use\nWhen you need to do something\n\n## Steps\n1. Do it\n\n## Verification\nDone')
+
+      const context = await svc.context({ cwd, includeGlobal: false })
+      expect(context).toContain('my-skill')
+      expect(context).toContain('.claude/skills/my-skill/SKILL.md')
+    } finally {
+      await fiber.dispose()
+    }
+  })
 })
