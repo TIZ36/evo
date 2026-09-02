@@ -13,7 +13,7 @@ import { discoverSkillCatalog, discoverGlobalSkillCatalog } from '../workspace/s
 import { ClaudeCliModelRunner, CodexCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
 import { extractLatestCodexTurn, isCodexTranscript, parseCodexTranscript } from './codex-transcript.js'
 import { hookHost, type HookHost } from './host.js'
-import { formatNotice, takeNotice, writeNotice } from './notice.js'
+import { formatError, formatNotice, takeError, takeNotice, writeError, writeNotice } from './notice.js'
 import { canonicalPath, hookScopes, projectScope } from './scope.js'
 import { batchTurns, enqueue, isDue, takeDue, type QueueLimits, type QueuedBatch } from './queue.js'
 import { extractLatestTurn, parseTranscript, type TurnDraft } from './transcript.js'
@@ -144,10 +144,16 @@ export function hookOutput(context: string, systemMessage?: string, event?: Hook
 /**
  * Only a prompt turn can show a notice: SessionStart consumes hook output
  * without rendering a system message, so a notice taken there would vanish.
+ *
+ * Error notices take precedence: a broken reflect is more important than a
+ * successful one that happened before it. Both are consumed so stale state
+ * doesn't accumulate.
  */
 export function noticeMessage(event: HookEvent, config: HookConfig, dir: string): string | undefined {
   if (!config.notify || event.hook_event_name !== 'UserPromptSubmit') return undefined
-  return formatNotice(takeNotice(dir))
+  const error = takeError(dir)
+  const notice = takeNotice(dir)
+  return formatError(error) ?? formatNotice(notice)
 }
 
 /** Reads the event's transcript, or null when there is none to read. */
@@ -314,6 +320,7 @@ async function runDetachedFlush(payloadPath: string, config: HookConfig): Promis
   rmSync(dirname(payloadPath), { recursive: true, force: true })
   const { service, store } = openService()
   const total: MemoryDelta = { created: [], updated: [], deleted: [] }
+  let firstError: string | undefined
   try {
     for (const batch of payload.batches ?? []) {
       service.setModelRunner(modelRunner(batch.host, config))
@@ -325,10 +332,18 @@ async function runDetachedFlush(payloadPath: string, config: HookConfig): Promis
 
         await runSlowPath(service, batch.scope, config)
       } catch (error) {
-        log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${String(error instanceof Error ? error.message : error)}`)
+        const reason = String(error instanceof Error ? error.message : error)
+        log(`ERROR reflect failed for ${batch.turns.length} turn(s): ${reason}`)
+        if (!firstError) firstError = reason
       }
     }
-    if (config.notify) writeNotice(dataDir(), total)
+    if (config.notify) {
+      if (firstError) {
+        writeError(dataDir(), firstError)
+      } else {
+        writeNotice(dataDir(), total)
+      }
+    }
   } finally {
     store.close?.()
   }
