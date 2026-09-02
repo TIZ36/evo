@@ -2,14 +2,20 @@
 
 evo integrates with Claude Code (CLI and desktop) through its hook system — no Harness, no web server, no API key of its own. Reflection runs through `claude -p`, reusing the credentials Claude Code already has.
 
-## Installation via Plugin Marketplace
+## Choose One Install Method
+
+**Use the marketplace plugin OR the installer script, not both.** Running both makes evo execute twice per turn, doubling memory writes and model calls.
+
+### Option A: Plugin Marketplace (Recommended)
 
 ```bash
 /plugin marketplace add TIZ36/evo
 /plugin install evo
 ```
 
-## Installation via Installer Script
+The marketplace plugin is self-contained and updates automatically. Choose this if you want the simplest setup.
+
+### Option B: Installer Script
 
 ```bash
 ./install_evo_claude.sh              # install or upgrade
@@ -18,7 +24,54 @@ evo integrates with Claude Code (CLI and desktop) through its hook system — no
 
 The installer builds the package and patches `~/.claude/settings.json` (override with `CLAUDE_CONFIG_DIR`). It preserves other hooks in the file and creates a backup at `settings.json.evo-backup`.
 
-**Use the marketplace or the installer, not both** — running both makes evo execute twice per turn.
+Choose the script if you want to run from a local checkout or need more control over the build.
+
+## Upgrade Behavior
+
+**Re-running the installer is the supported upgrade path.** It:
+
+1. Removes all existing evo hooks (both plugin-style and script-style)
+2. Installs the current set of hook events
+3. Preserves all non-evo hooks in the file
+
+This ensures exactly one evo hook per event after upgrade, even if you previously installed a different version or switched between plugin and script.
+
+## Conflict Detection
+
+The installer detects and refuses to run when conflicts would cause double execution:
+
+### Plugin + Script Conflict
+
+If the marketplace plugin is already installed, the script refuses with:
+
+```
+evo: marketplace plugin is already installed at ~/.claude/plugins/evo-abc123
+     Using both plugin and script would run evo twice per turn.
+
+     To use this script instead, first remove the plugin:
+       /plugin uninstall evo
+     Then run this script again.
+```
+
+### Global + Project Conflict
+
+If you install globally and the current project has evo hooks in `.claude/settings.local.json`, the installer warns:
+
+```
+evo: WARNING: project-level evo hooks found in .claude/settings.local.json
+     Global + project hooks will run evo twice per turn.
+     Remove the project hooks to avoid double execution:
+       rm ".claude/settings.local.json"
+```
+
+## Uninstalling
+
+To fully remove evo:
+
+- **Plugin install:** `/plugin uninstall evo`
+- **Script install:** `./install_evo_claude.sh --uninstall`
+
+If you installed both (accidentally), run both uninstall commands.
 
 ## Browse Memory and Skills
 

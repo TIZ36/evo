@@ -49,10 +49,11 @@ if [[ "$MODE" == "install" ]]; then
 fi
 
 mkdir -p "$CODEX_DIR"
-node --input-type=module - "$SETTINGS" "$HOOK_ENTRY" "$MODE" <<'NODE'
-import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
+node --input-type=module - "$SETTINGS" "$HOOK_ENTRY" "$MODE" "$CODEX_DIR" <<'NODE'
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const [, , settingsPath, hookEntry, mode] = process.argv
+const [, , settingsPath, hookEntry, mode, codexDir] = process.argv
 
 /** Hook events evo takes part in. Extend here; re-running the script applies it. */
 const EVENTS = {
@@ -61,9 +62,84 @@ const EVENTS = {
   Stop: { timeout: 20 },
 }
 const command = `node --no-warnings ${hookEntry}`
-/** Any evo hook, including ones installed from an older checkout path. */
-const isEvoHook = hook => typeof hook?.command === 'string' && /hook[/\\]cli\.mjs/.test(hook.command)
 
+/**
+ * Matches any evo hook command, regardless of install method:
+ * - hook/cli.mjs (script-style, dist or src)
+ * - hook\\cli.mjs (Windows)
+ * - bin/hook.mjs (plugin-style, PLUGIN_ROOT or CODEX_PLUGIN_ROOT)
+ * - evo-hook (global npm install)
+ * - evo-memory (legacy package name)
+ */
+function isEvoHook(hook) {
+  if (typeof hook?.command !== 'string') return false
+  const cmd = hook.command
+  // Script-style: hook/cli.mjs or hook\cli.mjs
+  if (/hook[/\\]cli\.mjs/.test(cmd)) return true
+  // Plugin-style: bin/hook.mjs
+  if (/bin[/\\]hook\.mjs/.test(cmd)) return true
+  // Plugin-style with PLUGIN_ROOT variable
+  if (/\$\{?PLUGIN_ROOT/.test(cmd) && /hook\.mjs/.test(cmd)) return true
+  if (/\$\{?CODEX_PLUGIN_ROOT/.test(cmd) && /hook\.mjs/.test(cmd)) return true
+  // Global npm install: evo-hook or evo-memory as standalone command or at end of path
+  if (/(^|[/\\])evo-hook(\s|$)/.test(cmd)) return true
+  if (/(^|[/\\])evo-memory(\s|$)/.test(cmd)) return true
+  return false
+}
+
+/** Checks if the evo plugin is installed via Codex plugin system. */
+function findCodexPlugin() {
+  const pluginsDir = join(codexDir, 'plugins')
+  if (!existsSync(pluginsDir)) return null
+  try {
+    for (const entry of readdirSync(pluginsDir)) {
+      const pluginJson = join(pluginsDir, entry, '.codex-plugin', 'plugin.json')
+      if (existsSync(pluginJson)) {
+        try {
+          const manifest = JSON.parse(readFileSync(pluginJson, 'utf8'))
+          if (manifest.name === 'evo') return join(pluginsDir, entry)
+        } catch { /* skip malformed manifests */ }
+      }
+    }
+  } catch { /* plugins dir not readable */ }
+  return null
+}
+
+/** Counts evo hooks in a settings object. */
+function countEvoHooks(settings) {
+  const hooks = settings?.hooks
+  if (!hooks || typeof hooks !== 'object') return { count: 0, events: [] }
+  let count = 0
+  const events = []
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      const inner = Array.isArray(group?.hooks) ? group.hooks : []
+      const evoCount = inner.filter(isEvoHook).length
+      if (evoCount > 0) {
+        count += evoCount
+        if (!events.includes(event)) events.push(event)
+      }
+    }
+  }
+  return { count, events }
+}
+
+// ── Plugin conflict detection ─────────────────────────────────────────────
+const pluginPath = findCodexPlugin()
+if (pluginPath && mode === 'install') {
+  console.error(`evo: marketplace plugin is already installed at ${pluginPath}`)
+  console.error(`     Using both plugin and script would run evo twice per turn.`)
+  console.error(``)
+  console.error(`     To use this script instead, first remove the plugin:`)
+  console.error(`       codex plugin remove evo`)
+  console.error(`     Then run this script again.`)
+  console.error(``)
+  console.error(`     Or keep the plugin and skip this script.`)
+  process.exit(1)
+}
+
+// ── Load and back up existing settings ────────────────────────────────────
 let settings = {}
 let existed = false
 try {
@@ -110,6 +186,11 @@ if (mode === 'install') {
   for (const event of Object.keys(EVENTS)) console.log(`  ${event}`)
 } else {
   console.log(`evo: removed ${removed} hook entr${removed === 1 ? 'y' : 'ies'}`)
+  // Also check if plugin is still installed after uninstall
+  if (pluginPath) {
+    console.log(`evo: note: marketplace plugin still installed at ${pluginPath}`)
+    console.log(`     To fully remove evo, also run: codex plugin remove evo`)
+  }
 }
 NODE
 
@@ -117,6 +198,60 @@ if [[ "$MODE" == "uninstall" ]]; then
   echo "evo: uninstalled from $SETTINGS"
   exit 0
 fi
+
+# ── Project-level hook warning ─────────────────────────────────────────────
+# Check cwd for project-level hooks that would cause double execution
+node --input-type=module - "$(pwd)" <<'NODE'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const [, , cwd] = process.argv
+
+function isEvoHook(hook) {
+  if (typeof hook?.command !== 'string') return false
+  const cmd = hook.command
+  if (/hook[/\\]cli\.mjs/.test(cmd)) return true
+  if (/bin[/\\]hook\.mjs/.test(cmd)) return true
+  if (/\$\{?PLUGIN_ROOT/.test(cmd) && /hook\.mjs/.test(cmd)) return true
+  if (/\$\{?CODEX_PLUGIN_ROOT/.test(cmd) && /hook\.mjs/.test(cmd)) return true
+  if (/(^|[/\\])evo-hook(\s|$)/.test(cmd)) return true
+  if (/(^|[/\\])evo-memory(\s|$)/.test(cmd)) return true
+  return false
+}
+
+const possiblePaths = [
+  join(cwd, '.codex', 'hooks.json'),
+  join(cwd, 'codex.hooks.json'),
+]
+
+for (const projectSettings of possiblePaths) {
+  if (!existsSync(projectSettings)) continue
+  try {
+    const settings = JSON.parse(readFileSync(projectSettings, 'utf8'))
+    const hooks = settings?.hooks
+    if (!hooks || typeof hooks !== 'object') continue
+    
+    let count = 0
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!Array.isArray(groups)) continue
+      for (const group of groups) {
+        const inner = Array.isArray(group?.hooks) ? group.hooks : []
+        count += inner.filter(isEvoHook).length
+      }
+    }
+    
+    if (count > 0) {
+      console.log(``)
+      console.log(`evo: WARNING: project-level evo hooks found in ${projectSettings}`)
+      console.log(`     Global + project hooks will run evo twice per turn.`)
+      console.log(`     Remove the project hooks to avoid double execution:`)
+      console.log(`       rm "${projectSettings}"`)
+      console.log(`     Or edit it to remove the evo entries from hooks.`)
+      break
+    }
+  } catch { /* not readable JSON */ }
+}
+NODE
 
 # Prove the installed command actually answers before claiming success.
 PROBE=$(printf '{"hook_event_name":"UserPromptSubmit","cwd":"%s","session_id":"install-probe"}' "$SCRIPT_DIR" \
@@ -133,7 +268,6 @@ evo: installed successfully
 
 Open a new Codex session for the hooks to load. Codex asks you to trust a hook
 command the first time it runs one — answer yes, or evo stays inert.
-Installing the plugin as well would run evo twice per turn — pick one.
 
 Optional runtime overrides:
   EVO_HOOK_REFLECT=0   recall only, never write memory
