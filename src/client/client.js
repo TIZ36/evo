@@ -24,7 +24,7 @@
  * Data comes from the host API at /evo/*.
  */
 window.__ModuleLoader__.load({
-  id: 'evo',
+  id: '@tiz36/evo',
   factory: function (require) {
     var module = { exports: {} }
     var exports = module.exports
