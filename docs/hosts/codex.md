@@ -2,14 +2,20 @@
 
 evo integrates with Codex as a hook plugin, sharing the same bundle as Claude Code. Reflection runs through `codex exec` using your existing Codex configuration.
 
-## Installation via Plugin Marketplace
+## Choose One Install Method
+
+**Use the marketplace plugin OR the installer script, not both.** Running both makes evo execute twice per turn, doubling memory writes and model calls.
+
+### Option A: Plugin Marketplace (Recommended)
 
 ```bash
 codex plugin marketplace add TIZ36/evo
 codex plugin add evo@evo
 ```
 
-## Installation via Installer Script
+The marketplace plugin is self-contained and updates with the plugin system. Choose this if you want the simplest setup.
+
+### Option B: Installer Script
 
 ```bash
 ./install_evo_codex.sh              # install or upgrade
@@ -18,7 +24,53 @@ codex plugin add evo@evo
 
 The installer writes `~/.codex/hooks.json` (override with `CODEX_HOME`). Codex asks you to trust a hook command the first time it runs; until you confirm, evo stays inert.
 
-**Use the marketplace or the installer, not both.**
+Choose the script if you want to run from a local checkout or need more control over the build.
+
+## Upgrade Behavior
+
+**Re-running the installer is the supported upgrade path.** It:
+
+1. Removes all existing evo hooks (both plugin-style and script-style)
+2. Installs the current set of hook events
+3. Preserves all non-evo hooks in the file
+
+This ensures exactly one evo hook per event after upgrade, even if you previously installed a different version or switched between plugin and script.
+
+## Conflict Detection
+
+The installer detects and refuses to run when conflicts would cause double execution:
+
+### Plugin + Script Conflict
+
+If the marketplace plugin is already installed, the script refuses with:
+
+```
+evo: marketplace plugin is already installed at ~/.codex/plugins/evo-abc123
+     Using both plugin and script would run evo twice per turn.
+
+     To use this script instead, first remove the plugin:
+       codex plugin remove evo
+     Then run this script again.
+```
+
+### Global + Project Conflict
+
+If you install globally and the current project has evo hooks in `.codex/hooks.json` or `codex.hooks.json`, the installer warns:
+
+```
+evo: WARNING: project-level evo hooks found in .codex/hooks.json
+     Global + project hooks will run evo twice per turn.
+     Remove the project hooks to avoid double execution.
+```
+
+## Uninstalling
+
+To fully remove evo:
+
+- **Plugin install:** `codex plugin remove evo`
+- **Script install:** `./install_evo_codex.sh --uninstall`
+
+If you installed both (accidentally), run both uninstall commands.
 
 ## Browse Memory and Skills
 
