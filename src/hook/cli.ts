@@ -9,6 +9,7 @@ import type { MemoryDelta, MemoryScope, Turn } from '../core/types.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter } from '../workspace/importer.js'
+import { discoverSkillCatalog, discoverGlobalSkillCatalog } from '../workspace/skill-discovery.js'
 import { ClaudeCliModelRunner, CodexCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
 import { extractLatestCodexTurn, isCodexTranscript, parseCodexTranscript } from './codex-transcript.js'
 import { hookHost, type HookHost } from './host.js'
@@ -46,6 +47,8 @@ export type HookConfig = {
   model: string
   notify: boolean
   debug: boolean
+  /** Include global (~/) skill directories in recall context. */
+  includeGlobalSkills: boolean
   /** When a queued batch is distilled, and how much of each turn it keeps. */
   queue: QueueLimits
 }
@@ -60,6 +63,7 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
     model: env.EVO_HOOK_MODEL?.trim() ?? '',
     notify: env.EVO_HOOK_NOTIFY !== '0',
     debug: env.EVO_HOOK_DEBUG === '1',
+    includeGlobalSkills: env.EVO_HOOK_GLOBAL_SKILLS !== '0',
     /* EVO_HOOK_BATCH_TURNS=1 restores the old turn-by-turn behaviour. */
     queue: {
       turns: positive(env.EVO_HOOK_BATCH_TURNS) ?? 10,
@@ -77,9 +81,24 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
  * `UserPromptSubmit` hook's `additionalContext` to the model verbatim, so
  * recall is simply the rendered memory context — empty when there is nothing
  * to say.
+ *
+ * Disk-discovered skills are included the same way EvoCordisService.context
+ * does for DSH: project skills from event.cwd, global skills from $HOME.
  */
 export async function recallContext(event: HookEvent, service: EvoService, config: HookConfig): Promise<string> {
-  return service.context({ scopes: hookScopes(event.cwd), limit: config.recallLimit, maxChars: config.maxChars })
+  const additionalSkills = []
+  if (event.cwd) {
+    additionalSkills.push(...discoverSkillCatalog(event.cwd))
+  }
+  if (config.includeGlobalSkills) {
+    additionalSkills.push(...discoverGlobalSkillCatalog())
+  }
+  return service.context({
+    scopes: hookScopes(event.cwd),
+    limit: config.recallLimit,
+    maxChars: config.maxChars,
+    additionalSkills,
+  })
 }
 
 /**

@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EvoService } from '../../src/core/evo.js'
 import { SqliteMemoryStore } from '../../src/storage/sqlite-store.js'
 import { buildCatalog, hookConfig, recallContext, reflectTurn } from '../../src/hook/cli.js'
@@ -15,7 +15,7 @@ const config = hookConfig({})
 
 describe('hook config', () => {
   it('defaults to reflecting and importing', () => {
-    expect(config).toMatchObject({ recallLimit: 40, maxChars: 6000, reflect: true, importWorkspace: true })
+    expect(config).toMatchObject({ recallLimit: 40, maxChars: 6000, reflect: true, importWorkspace: true, includeGlobalSkills: true })
   })
 
   it('is switched off by the documented variables', () => {
@@ -25,6 +25,11 @@ describe('hook config', () => {
 
   it('ignores a non-numeric limit instead of producing NaN', () => {
     expect(hookConfig({ EVO_HOOK_RECALL_LIMIT: 'many' }).recallLimit).toBe(40)
+  })
+
+  it('disables global skills with EVO_HOOK_GLOBAL_SKILLS=0', () => {
+    expect(hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' }).includeGlobalSkills).toBe(false)
+    expect(hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '1' }).includeGlobalSkills).toBe(true)
   })
 })
 
@@ -46,6 +51,114 @@ describe('recallContext', () => {
   it('is empty when nothing is remembered', async () => {
     const { store, evo } = service()
     expect(await recallContext({ cwd: '/nowhere' }, evo, config)).toBe('')
+    store.close?.()
+  })
+})
+
+describe('recallContext disk skills', () => {
+  let cwd: string
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'evo-hook-skills-'))
+  })
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true })
+  })
+
+  it('includes project disk skills with Chinese/Unicode names', async () => {
+    const { store, evo } = service()
+    mkdirSync(join(cwd, '.claude/skills/素材链路拆解分析'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/素材链路拆解分析/SKILL.md'), `# 素材链路拆解
+
+## Purpose
+
+分析广告素材的完整链路。
+
+## When to use
+
+当需要分析素材效果时使用。
+
+## Steps
+
+1. 收集素材数据
+2. 分析链路节点
+3. 输出分析报告
+
+## Verification
+
+报告生成成功。
+`)
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    const text = await recallContext({ hook_event_name: 'UserPromptSubmit', cwd }, evo, noGlobalConfig)
+    expect(text).toContain('素材链路拆解分析')
+    expect(text).toContain('.claude/skills/素材链路拆解分析/SKILL.md')
+    expect(text).toContain('当需要分析素材效果')
+    store.close?.()
+  })
+
+  it('includes incomplete SKILL.md with real paths', async () => {
+    const { store, evo } = service()
+    mkdirSync(join(cwd, '.claude/skills/quick-tip'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/quick-tip/SKILL.md'), `# Quick Notes
+
+When working with JSON files, use jq to parse them.
+
+This is a simple guide for JSON handling.`)
+
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    const text = await recallContext({ hook_event_name: 'UserPromptSubmit', cwd }, evo, noGlobalConfig)
+    expect(text).toContain('quick-tip')
+    expect(text).toContain('.claude/skills/quick-tip/SKILL.md')
+    expect(text).toContain('jq')
+    store.close?.()
+  })
+
+  it('includes skills from multiple skill directories', async () => {
+    const { store, evo } = service()
+    mkdirSync(join(cwd, '.claude/skills/skill-a'), { recursive: true })
+    mkdirSync(join(cwd, '.codex/skills/skill-b'), { recursive: true })
+    mkdirSync(join(cwd, '.paper/agents/skills/skill-c'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/skill-a/SKILL.md'), '# A\n\n## When to use\n\nFor A tasks.')
+    writeFileSync(join(cwd, '.codex/skills/skill-b/SKILL.md'), '# B\n\n## When to use\n\nFor B tasks.')
+    writeFileSync(join(cwd, '.paper/agents/skills/skill-c/SKILL.md'), '# C\n\n## When to use\n\nFor C tasks.')
+
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    const text = await recallContext({ hook_event_name: 'UserPromptSubmit', cwd }, evo, noGlobalConfig)
+    expect(text).toContain('skill-a')
+    expect(text).toContain('.claude/skills/skill-a/SKILL.md')
+    expect(text).toContain('skill-b')
+    expect(text).toContain('.codex/skills/skill-b/SKILL.md')
+    expect(text).toContain('skill-c')
+    expect(text).toContain('.paper/agents/skills/skill-c/SKILL.md')
+    store.close?.()
+  })
+
+  it('does not invent project disk skills without cwd', async () => {
+    const { store, evo } = service()
+    mkdirSync(join(cwd, '.claude/skills/test-skill'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/test-skill/SKILL.md'), '# Test\n\n## When to use\n\nFor testing.')
+
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    const text = await recallContext({ hook_event_name: 'UserPromptSubmit' }, evo, noGlobalConfig)
+    expect(text).toBe('')
+    expect(text).not.toContain('test-skill')
+    store.close?.()
+  })
+
+  it('deduplicates skills by (scope, path) not name-only', async () => {
+    const { store, evo } = service()
+    mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+    mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build (Claude)\n\n## When to use\n\nClaude build.')
+    writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build (Codex)\n\n## When to use\n\nCodex build.')
+
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    const text = await recallContext({ hook_event_name: 'UserPromptSubmit', cwd }, evo, noGlobalConfig)
+    expect(text).toContain('.claude/skills/build/SKILL.md')
+    expect(text).toContain('.codex/skills/build/SKILL.md')
+    const buildMatches = text.match(/\*\*build\*\*/gi)
+    expect(buildMatches).toHaveLength(2)
     store.close?.()
   })
 })
