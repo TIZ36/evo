@@ -75,12 +75,17 @@ For a local checkout, use `node /path/to/evo/dist/hook/cli.mjs` as the command.
 
 ## What You See
 
-Recall is silent — memory arrives as context. evo speaks in the transcript only through the hook's `systemMessage`:
+evo's only visible surface is the transcript, via the hook's `systemMessage`. There is no composer chip, statusline, or persistent indicator — Claude Code's `statusLine` setting requires manual user configuration and plugins cannot contribute to it directly.
 
-- After a turn it learned from: `evo · remembered 2, updated 1`
-- When broken: `evo · memory unavailable: <reason>`
+| State | What appears |
+| --- | --- |
+| **Idle / recall** | Nothing. Memory arrives as context; the transcript stays silent. |
+| **Learned something** | `evo · remembered 2, updated 1` — one receipt on the next `UserPromptSubmit`, then consumed. |
+| **Broken** | `evo · memory unavailable: <reason>` — one error line on the next `UserPromptSubmit`, then consumed. |
 
-Failures never interrupt a session: the hook always exits 0, with errors logged to `<dataDir>/hook.log`.
+Notices are `UserPromptSubmit`-only: a `SessionStart` defers any pending receipt or error to the first actual prompt in the session.
+
+Failures never interrupt a session: the hook always exits 0, with errors also logged to `<dataDir>/hook.log`.
 
 ## Environment Variables
 

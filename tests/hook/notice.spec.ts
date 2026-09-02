@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { MemoryItem } from '../../src/core/types.js'
-import { formatNotice, takeNotice, writeNotice } from '../../src/hook/notice.js'
+import { formatError, formatNotice, takeError, takeNotice, writeError, writeNotice } from '../../src/hook/notice.js'
 import { hookConfig, hookOutput, noticeMessage } from '../../src/hook/cli.js'
 
 const item = { id: 'm1' } as MemoryItem
@@ -34,6 +34,29 @@ describe('notice', () => {
     expect(formatNotice({ created: 2, updated: 0, at: 1 })).toBe('evo · remembered 2')
     expect(formatNotice({ created: 0, updated: 3, at: 1 })).toBe('evo · updated 3')
     expect(formatNotice({ created: 1, updated: 1, at: 1 })).toBe('evo · remembered 1, updated 1')
+  })
+})
+
+describe('error notice', () => {
+  it('round-trips an error and clears itself after one read', () => {
+    const path = dir()
+    writeError(path, 'connection refused')
+    expect(takeError(path)).toMatchObject({ reason: 'connection refused' })
+    expect(takeError(path)).toBeNull()
+  })
+
+  it('survives a corrupt error breadcrumb', () => {
+    const path = dir()
+    writeFileSync(join(path, 'hook-error.json'), 'not json')
+    expect(takeError(path)).toBeNull()
+  })
+
+  it('formats as one short line', () => {
+    expect(formatError({ reason: 'timeout', at: 1 })).toBe('evo · memory unavailable: timeout')
+  })
+
+  it('returns undefined for null', () => {
+    expect(formatError(null)).toBeUndefined()
   })
 })
 
@@ -78,5 +101,32 @@ describe('noticeMessage', () => {
   it('stays silent when notices are switched off', () => {
     const path = seeded()
     expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, { ...config, notify: false }, path)).toBeUndefined()
+  })
+
+  it('shows error notice when reflection failed', () => {
+    const path = dir()
+    writeError(path, 'network timeout')
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBe('evo · memory unavailable: network timeout')
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBeUndefined()
+  })
+
+  it('error takes precedence over success notice and consumes both', () => {
+    const path = dir()
+    writeNotice(path, { created: [item], updated: [], deleted: [] })
+    writeError(path, 'service down')
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBe('evo · memory unavailable: service down')
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBeUndefined()
+  })
+
+  it('is silent on idle recall with no breadcrumbs', () => {
+    const path = dir()
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBeUndefined()
+  })
+
+  it('leaves error breadcrumb for next prompt when session starts', () => {
+    const path = dir()
+    writeError(path, 'connection refused')
+    expect(noticeMessage({ hook_event_name: 'SessionStart' }, config, path)).toBeUndefined()
+    expect(noticeMessage({ hook_event_name: 'UserPromptSubmit' }, config, path)).toBe('evo · memory unavailable: connection refused')
   })
 })

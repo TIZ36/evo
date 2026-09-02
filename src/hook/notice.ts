@@ -10,7 +10,14 @@ import type { MemoryDelta } from '../core/types.js'
  */
 export type Notice = { created: number; updated: number; at: number }
 
+/**
+ * Error breadcrumb for detached reflection failures. Like Notice, it persists
+ * across hook invocations so the next prompt can report the failure.
+ */
+export type ErrorNotice = { reason: string; at: number }
+
 const FILE = 'hook-notice.json'
+const ERROR_FILE = 'hook-error.json'
 
 export function writeNotice(dataDir: string, delta: MemoryDelta): void {
   if (!delta.created.length && !delta.updated.length) return
@@ -38,4 +45,29 @@ export function formatNotice(notice: Notice | null): string | undefined {
   if (notice.created) parts.push(`remembered ${notice.created}`)
   if (notice.updated) parts.push(`updated ${notice.updated}`)
   return parts.length ? `evo · ${parts.join(', ')}` : undefined
+}
+
+/** Writes an error breadcrumb for the next prompt to pick up. */
+export function writeError(dataDir: string, reason: string): void {
+  try {
+    writeFileSync(join(dataDir, ERROR_FILE), JSON.stringify({ reason, at: Date.now() } satisfies ErrorNotice))
+  } catch { /* a missed error must never break a session */ }
+}
+
+/** Reads and consumes the error breadcrumb. */
+export function takeError(dataDir: string): ErrorNotice | null {
+  const path = join(dataDir, ERROR_FILE)
+  try {
+    const error = JSON.parse(readFileSync(path, 'utf8')) as ErrorNotice
+    rmSync(path, { force: true })
+    return typeof error.reason === 'string' ? error : null
+  } catch {
+    return null
+  }
+}
+
+/** One short error line, or nothing at all. */
+export function formatError(error: ErrorNotice | null): string | undefined {
+  if (!error) return undefined
+  return `evo · memory unavailable: ${error.reason}`
 }

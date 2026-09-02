@@ -69,7 +69,15 @@ Same as Claude Code:
 
 ## What You See
 
-Same as Claude Code: `evo · remembered 2, updated 1` after learning, or `evo · memory unavailable: <reason>` on error.
+evo's only visible surface is the transcript, via the hook's `systemMessage`. Codex has no composer chip or statusline equivalent that plugins can contribute to.
+
+| State | What appears |
+| --- | --- |
+| **Idle / recall** | Nothing. Memory arrives as context; the transcript stays silent. |
+| **Learned something** | `evo · remembered 2, updated 1` — one receipt on the next `UserPromptSubmit`, then consumed. |
+| **Broken** | `evo · memory unavailable: <reason>` — one error line on the next `UserPromptSubmit`, then consumed. |
+
+Notices are `UserPromptSubmit`-only: a `SessionStart` defers any pending receipt or error to the first actual prompt in the session. Failures also log to `<dataDir>/hook.log`.
 
 ## Everything Else
 
