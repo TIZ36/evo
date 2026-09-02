@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, afterEach, beforeEach } from 'vitest'
 import {
+  collectDiskSkills,
   discoverSkillCatalog,
   discoverSkillFiles,
   memoryItemToSummary,
@@ -367,5 +368,92 @@ describe('skillItemToSummary with disk-imported skills', () => {
     const summary = skillItemToSummary(skill)
     expect(summary.source).toBe('human')
     expect(summary.path).toBe('/project/.paper/agents/skills/project-skill/SKILL.md')
+  })
+})
+
+describe('collectDiskSkills', () => {
+  let cwd: string
+
+  beforeEach(() => {
+    cwd = fixture()
+  })
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true })
+  })
+
+  it('collects project skills when cwd is provided', () => {
+    mkdirSync(join(cwd, '.claude/skills/test-skill'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/test-skill/SKILL.md'), validSkillMd)
+
+    const results = collectDiskSkills({ cwd })
+    expect(results.length).toBeGreaterThanOrEqual(1)
+    const projectSkill = results.find(s => s.path === '.claude/skills/test-skill/SKILL.md')
+    expect(projectSkill).toBeDefined()
+    expect(projectSkill?.scope?.type).toBe('project')
+    expect(projectSkill?.scope?.id).toBe(cwd)
+  })
+
+  it('includes global skills by default (includeGlobal defaults to true)', () => {
+    const results = collectDiskSkills({ cwd: undefined, includeGlobal: true })
+    for (const skill of results) {
+      if (skill.path.startsWith('~/')) {
+        expect(skill.scope?.type).toBe('global')
+      }
+    }
+  })
+
+  it('excludes global skills when includeGlobal is false', () => {
+    mkdirSync(join(cwd, '.claude/skills/local-only'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/local-only/SKILL.md'), validSkillMd)
+
+    const results = collectDiskSkills({ cwd, includeGlobal: false })
+    for (const skill of results) {
+      expect(skill.path.startsWith('~/')).toBe(false)
+    }
+    expect(results.find(s => s.name === 'local-only')).toBeDefined()
+  })
+
+  it('returns empty array when no cwd and includeGlobal false', () => {
+    const results = collectDiskSkills({ cwd: undefined, includeGlobal: false })
+    expect(results).toHaveLength(0)
+  })
+})
+
+describe('discoverSkillCatalog scope handling', () => {
+  let cwd: string
+
+  beforeEach(() => {
+    cwd = fixture()
+  })
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true })
+  })
+
+  it('includes scope in SkillCatalogEntry for project skills', () => {
+    mkdirSync(join(cwd, '.claude/skills/scoped-skill'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/scoped-skill/SKILL.md'), validSkillMd)
+
+    const results = discoverSkillCatalog(cwd)
+    expect(results).toHaveLength(1)
+    expect(results[0]!.scope?.type).toBe('project')
+    expect(results[0]!.scope?.id).toBe(cwd)
+  })
+
+  it('same-named skills in different directories have distinct paths for dedup', () => {
+    mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+    mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build (Claude)\n\n## When to use\n\nClaude build.')
+    writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build (Codex)\n\n## When to use\n\nCodex build.')
+
+    const results = discoverSkillCatalog(cwd)
+    expect(results).toHaveLength(2)
+    const paths = results.map(r => r.path).sort()
+    expect(paths).toEqual([
+      '.claude/skills/build/SKILL.md',
+      '.codex/skills/build/SKILL.md',
+    ])
+    expect(results.every(r => r.scope?.type === 'project')).toBe(true)
   })
 })

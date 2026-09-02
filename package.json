@@ -71,7 +71,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsdown && node scripts/copy-client.mjs && pnpm plugin:build",
     "rule:scan": "node scripts/iron-rule.mjs",
-    "check": "npm run test && npm run typecheck && npm run build && npm run rule:scan",
+    "hook:drift": "node scripts/check-hook-drift.mjs",
+    "check": "npm run test && npm run typecheck && npm run build && npm run rule:scan && npm run hook:drift",
     "plugin:build": "tsdown -c tsdown.plugin.config.ts"
   },
   "dependencies": {

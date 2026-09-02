@@ -155,8 +155,8 @@ describe('stripEvoHooks', () => {
     expect(result.removed).toBe(2)
     expect(result.settings.otherSetting).toBe(true)
     expect(result.settings.hooks!.SessionStart).toHaveLength(1)
-    expect(result.settings.hooks!.SessionStart![0].hooks).toHaveLength(1)
-    expect(result.settings.hooks!.SessionStart![0].hooks![0].command).toBe('other-hook')
+    expect(result.settings.hooks!.SessionStart![0]!.hooks).toHaveLength(1)
+    expect(result.settings.hooks!.SessionStart![0]!.hooks![0]!.command).toBe('other-hook')
     expect(result.settings.hooks!.UserPromptSubmit).toBeUndefined()
   })
 
@@ -191,8 +191,8 @@ describe('addEvoHooks', () => {
     const events = { SessionStart: { timeout: 20 }, Stop: { timeout: 20 } }
     const result = addEvoHooks({}, 'node dist/hook/cli.mjs', events)
     expect(result.hooks!.SessionStart).toHaveLength(1)
-    expect(result.hooks!.SessionStart![0].hooks![0].command).toBe('node dist/hook/cli.mjs')
-    expect(result.hooks!.SessionStart![0].hooks![0].timeout).toBe(20)
+    expect(result.hooks!.SessionStart![0]!.hooks![0]!.command).toBe('node dist/hook/cli.mjs')
+    expect(result.hooks!.SessionStart![0]!.hooks![0]!.timeout).toBe(20)
     expect(result.hooks!.Stop).toHaveLength(1)
   })
 
@@ -205,8 +205,8 @@ describe('addEvoHooks', () => {
     const events = { SessionStart: { timeout: 20 } }
     const result = addEvoHooks(settings, 'node dist/hook/cli.mjs', events)
     expect(result.hooks!.SessionStart).toHaveLength(2)
-    expect(result.hooks!.SessionStart![0].hooks![0].command).toBe('other-hook')
-    expect(result.hooks!.SessionStart![1].hooks![0].command).toBe('node dist/hook/cli.mjs')
+    expect(result.hooks!.SessionStart![0]!.hooks![0]!.command).toBe('other-hook')
+    expect(result.hooks!.SessionStart![1]!.hooks![0]!.command).toBe('node dist/hook/cli.mjs')
   })
 })
 
@@ -225,7 +225,7 @@ describe('re-run does not duplicate', () => {
     
     const final = addEvoHooks(stripped, 'node /new/path/hook/cli.mjs', events)
     expect(final.hooks!.SessionStart).toHaveLength(1)
-    expect(final.hooks!.SessionStart![0].hooks![0].command).toBe('node /new/path/hook/cli.mjs')
+    expect(final.hooks!.SessionStart![0]!.hooks![0]!.command).toBe('node /new/path/hook/cli.mjs')
     expect(final.hooks!.UserPromptSubmit).toHaveLength(1)
     expect(final.hooks!.Stop).toHaveLength(1)
   })

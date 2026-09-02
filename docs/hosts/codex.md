@@ -131,6 +131,15 @@ evo's only visible surface is the transcript, via the hook's `systemMessage`. Co
 
 Notices are `UserPromptSubmit`-only: a `SessionStart` defers any pending receipt or error to the first actual prompt in the session. Failures also log to `<dataDir>/hook.log`.
 
+## Picking Up Hook Updates
+
+Marketplace users receive hook changes after the rebuilt `plugin/bin/hook.mjs` is committed to the branch they installed from. To update:
+
+1. Update or reinstall the plugin via the marketplace
+2. The new hook bundle takes effect on the next session
+
+Installer-script users already run `pnpm build` inside `install_evo_codex.sh`, so their `dist/hook/cli.mjs` is fresh on each script run — no manual update needed.
+
 ## Everything Else
 
 Same SQLite file, same scopes, same `systemMessage` output, same environment variables. See:

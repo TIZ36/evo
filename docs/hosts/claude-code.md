@@ -151,6 +151,15 @@ See [Environment Variables](../configuration/environment-variables.md) for the f
 | `EVO_HOOK_BATCH_TURNS` | `10` | Turns before batch distillation |
 | `EVO_HOOK_BATCH_IDLE_MS` | `300000` | Idle time (5 min) to trigger batch |
 
+## Picking Up Hook Updates
+
+Marketplace users receive hook changes after the rebuilt `plugin/bin/hook.mjs` is committed to the branch they installed from. To update:
+
+1. Update or reinstall the plugin via the marketplace
+2. The new hook bundle takes effect on the next session
+
+Installer-script users already run `pnpm build` inside `install_evo_claude.sh`, so their `dist/hook/cli.mjs` is fresh on each script run — no manual update needed.
+
 ## Migrating Project Paths
 
 Project memory is keyed by canonical (symlink-resolved) working directory. If a project moves:

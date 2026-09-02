@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import type { MemoryItem, MemoryScope, SkillItem } from '../core/types.js'
+import { scopeKey, type MemoryItem, type MemoryScope, type SkillItem } from '../core/types.js'
 import type { SkillSummary } from '../workspace/skill-discovery.js'
 import {
   discoverSkillFiles,
@@ -29,48 +29,42 @@ export type CatalogResult = {
 /**
  * Merge database skills with disk-discovered SKILL.md files.
  * Disk files not yet in the database appear as "disk" source.
- * Deduplication uses both path and name to handle absolute/relative path mismatches.
+ *
+ * Deduplication uses (scope_key, path) so same-named skills in different
+ * directories (e.g. .claude/skills/build and .codex/skills/build) both survive.
+ * This matches the recall dedup logic in EvoService.context and EvoCordisService.skills.
  */
 export function mergeSkillsWithDisk(
   dbSkills: SkillItem[],
   projectRoot?: string
 ): SkillSummary[] {
   const summaries: SkillSummary[] = []
-  const seenPaths = new Set<string>()
-  const seenNames = new Set<string>()
+  const seenKeys = new Set<string>()
 
   for (const skill of dbSkills) {
     const summary = skillItemToSummary(skill)
+    const dedupKey = `${scopeKey(summary.scope)}:${summary.path.toLowerCase()}`
+    seenKeys.add(dedupKey)
     summaries.push(summary)
-    seenPaths.add(summary.path.toLowerCase())
-    seenNames.add(`${skill.scope.type}:${skill.name}`.toLowerCase())
   }
 
+  const globalScope: MemoryScope = { type: 'global' }
   const globalDisk = discoverGlobalSkillFiles()
   for (const { summary } of globalDisk) {
-    const nameKey = `global:${summary.name}`.toLowerCase()
-    if (!seenPaths.has(summary.path.toLowerCase()) && !seenNames.has(nameKey)) {
-      seenPaths.add(summary.path.toLowerCase())
-      seenNames.add(nameKey)
-      summaries.push(summary)
-    }
+    const dedupKey = `${scopeKey(globalScope)}:${summary.path.toLowerCase()}`
+    if (seenKeys.has(dedupKey)) continue
+    seenKeys.add(dedupKey)
+    summaries.push(summary)
   }
 
   if (projectRoot) {
-    const projectDisk = discoverSkillFiles(projectRoot, { type: 'project', id: projectRoot })
-    for (const { summary, abs } of projectDisk) {
-      const nameKey = `project:${summary.name}`.toLowerCase()
-      const absLower = abs.toLowerCase()
-      const alreadySeen = seenPaths.has(summary.path.toLowerCase()) ||
-        seenPaths.has(absLower) ||
-        seenNames.has(nameKey) ||
-        [...seenPaths].some(p => p.endsWith(summary.path.toLowerCase()))
-      if (!alreadySeen) {
-        seenPaths.add(summary.path.toLowerCase())
-        seenPaths.add(absLower)
-        seenNames.add(nameKey)
-        summaries.push(summary)
-      }
+    const projectScope: MemoryScope = { type: 'project', id: projectRoot }
+    const projectDisk = discoverSkillFiles(projectRoot, projectScope)
+    for (const { summary } of projectDisk) {
+      const dedupKey = `${scopeKey(projectScope)}:${summary.path.toLowerCase()}`
+      if (seenKeys.has(dedupKey)) continue
+      seenKeys.add(dedupKey)
+      summaries.push(summary)
     }
   }
 

@@ -9,7 +9,7 @@ import type { MemoryDelta, MemoryScope, Turn } from '../core/types.js'
 import { EvoService } from '../core/evo.js'
 import { SqliteMemoryStore } from '../storage/sqlite-store.js'
 import { WorkspaceImporter } from '../workspace/importer.js'
-import { discoverSkillCatalog, discoverGlobalSkillCatalog } from '../workspace/skill-discovery.js'
+import { collectDiskSkills } from '../workspace/skill-discovery.js'
 import { ClaudeCliModelRunner, CodexCliModelRunner, DEFAULT_HOOK_MODEL } from './runner.js'
 import { extractLatestCodexTurn, isCodexTranscript, parseCodexTranscript } from './codex-transcript.js'
 import { hookHost, type HookHost } from './host.js'
@@ -84,15 +84,13 @@ export function hookConfig(env: NodeJS.ProcessEnv = process.env): HookConfig {
  *
  * Disk-discovered skills are included the same way EvoCordisService.context
  * does for DSH: project skills from event.cwd, global skills from $HOME.
+ * Uses collectDiskSkills helper to avoid code duplication with cordis service.
  */
 export async function recallContext(event: HookEvent, service: EvoService, config: HookConfig): Promise<string> {
-  const additionalSkills = []
-  if (event.cwd) {
-    additionalSkills.push(...discoverSkillCatalog(event.cwd))
-  }
-  if (config.includeGlobalSkills) {
-    additionalSkills.push(...discoverGlobalSkillCatalog())
-  }
+  const additionalSkills = collectDiskSkills({
+    cwd: event.cwd,
+    includeGlobal: config.includeGlobalSkills,
+  })
   return service.context({
     scopes: hookScopes(event.cwd),
     limit: config.recallLimit,
