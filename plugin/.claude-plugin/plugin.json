@@ -8,7 +8,9 @@
   "keywords": [
     "memory",
     "recall",
-    "hooks"
+    "hooks",
+    "skills"
   ],
-  "hooks": "./hooks/hooks.json"
+  "hooks": "./hooks/hooks.json",
+  "commands": "./commands/"
 }

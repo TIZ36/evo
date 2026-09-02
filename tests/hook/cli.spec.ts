@@ -1,14 +1,14 @@
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { EvoService } from '../../src/core/evo.js'
 import { SqliteMemoryStore } from '../../src/storage/sqlite-store.js'
-import { hookConfig, recallContext, reflectTurn } from '../../src/hook/cli.js'
+import { buildCatalog, hookConfig, recallContext, reflectTurn } from '../../src/hook/cli.js'
 
 function service() {
   const store = new SqliteMemoryStore(join(mkdtempSync(join(tmpdir(), 'evo-hook-')), 'memory.db'))
-  return { store, evo: new EvoService({ store, events: store }) }
+  return { store, evo: new EvoService({ store, skillStore: store, events: store }) }
 }
 
 const config = hookConfig({})
@@ -103,6 +103,85 @@ describe('reflectTurn', () => {
     evo.setModelRunner({ complete: async () => { throw new Error('must not be called') } })
     expect(await reflectTurn({ session_id: 's1' }, evo)).toBeNull()
     expect(await reflectTurn({ session_id: 's1', transcript_path: join(dir, 'empty.jsonl') }, evo)).toBeNull()
+    store.close?.()
+  })
+})
+
+describe('buildCatalog', () => {
+  it('returns empty catalog when nothing is stored', async () => {
+    const { store, evo } = service()
+    const result = await buildCatalog(evo, store)
+    expect(result.skills).toHaveLength(0)
+    expect(result.memories).toHaveLength(0)
+    store.close?.()
+  })
+
+  it('includes global and project memories', async () => {
+    const { store, evo } = service()
+    const cwd = mkdtempSync(join(tmpdir(), 'evo-project-'))
+    await evo.remember({ scope: { type: 'global' }, kind: 'fact', title: 'Global fact', content: 'Global content' })
+    await evo.remember({ scope: { type: 'project', id: realpathSync(cwd) }, kind: 'preference', title: 'Project pref', content: 'Project content' })
+
+    const result = await buildCatalog(evo, store, cwd)
+    expect(result.memories).toHaveLength(2)
+    const titles = result.memories.map(m => m.name).sort()
+    expect(titles).toEqual(['Global fact', 'Project pref'])
+    store.close?.()
+  })
+
+  it('includes database skills and disk-discovered skills', async () => {
+    const { store, evo } = service()
+    const cwd = mkdtempSync(join(tmpdir(), 'evo-project-'))
+
+    await store.putSkill({
+      name: 'db-skill',
+      scope: { type: 'global' },
+      body: { purpose: 'P', trigger: 'T', steps: '1. S', check: 'C' },
+      usageCount: 5,
+      createdAt: 1000,
+      updatedAt: 1000,
+      dormant: false,
+      promoted: true,
+    })
+
+    mkdirSync(join(cwd, '.claude/skills/disk-skill'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/disk-skill/SKILL.md'), `# Disk Skill
+
+## Purpose
+
+Disk skill purpose.
+
+## When to use
+
+When testing disk discovery.
+
+## Steps
+
+1. Do the thing
+
+## Verification
+
+Check it worked.
+`)
+
+    const result = await buildCatalog(evo, store, cwd)
+    expect(result.skills.length).toBeGreaterThanOrEqual(2)
+    const names = result.skills.map(s => s.name)
+    expect(names).toContain('db-skill')
+    expect(names).toContain('disk-skill')
+    store.close?.()
+  })
+
+  it('includes skills with Chinese/Unicode names from disk', async () => {
+    const { store, evo } = service()
+    const cwd = mkdtempSync(join(tmpdir(), 'evo-project-'))
+
+    mkdirSync(join(cwd, '.claude/skills/素材分析'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/素材分析/SKILL.md'), '# 素材分析\n\n分析广告素材效果')
+
+    const result = await buildCatalog(evo, store, cwd)
+    const names = result.skills.map(s => s.name)
+    expect(names).toContain('素材分析')
     store.close?.()
   })
 })

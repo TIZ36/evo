@@ -4998,20 +4998,33 @@ var EvoService = class {
 	*
 	* Memories are rendered inline. Skills are listed as catalog entries (name +
 	* trigger + path) — the model can Read the SKILL.md if needed.
+	*
+	* @param additionalSkills - Extra skill catalog entries to include (e.g. disk-discovered skills)
 	*/
 	async context(query = {}) {
 		const memories = await this.recall(query);
 		const skillEntries = [];
+		const seenPaths = /* @__PURE__ */ new Set();
 		if (this.skillStore && query.scopes?.length) {
 			const skillQuery = { scopes: query.scopes };
 			if (query.limit !== void 0) skillQuery.limit = query.limit;
 			const skills = await this.skillStore.listSkills(skillQuery);
-			for (const skill of skills) skillEntries.push({
-				name: skill.name,
-				trigger: extractTriggerSummary(skill.body.trigger),
-				path: query.skillRoot ? `${query.skillRoot}/${skill.name}` : `.paper/agents/skills/${skill.name}`,
-				promoted: skill.promoted
-			});
+			for (const skill of skills) {
+				const path = skill.source?.path ?? (query.skillRoot ? `${query.skillRoot}/${skill.name}/SKILL.md` : `.paper/agents/skills/${skill.name}/SKILL.md`);
+				seenPaths.add(path.toLowerCase());
+				skillEntries.push({
+					name: skill.name,
+					trigger: extractTriggerSummary$1(skill.body.trigger),
+					path,
+					promoted: skill.promoted
+				});
+			}
+		}
+		if (query.additionalSkills) for (const skill of query.additionalSkills) {
+			const pathKey = skill.path.toLowerCase();
+			if (seenPaths.has(pathKey)) continue;
+			seenPaths.add(pathKey);
+			skillEntries.push(skill);
 		}
 		return renderMemoryContext(memories, skillEntries, query.maxChars);
 	}
@@ -5384,7 +5397,7 @@ var EvoService = class {
 		return this.model;
 	}
 };
-function extractTriggerSummary(trigger, maxLen = 80) {
+function extractTriggerSummary$1(trigger, maxLen = 80) {
 	const cleaned = (trigger.split("\n")[0] ?? trigger).replace(/^[-*]\s*/, "").trim();
 	if (cleaned.length <= maxLen) return cleaned;
 	return `${cleaned.slice(0, maxLen - 3)}...`;
@@ -5792,8 +5805,8 @@ function decodeSkill(row) {
 //#region src/workspace/importer.ts
 const IMPORT_TAG = "workspace-import";
 const MAX_CONTENT_CHARS = 5e4;
-const MAX_FILES = 500;
-const MAX_DEPTH = 8;
+const MAX_FILES$1 = 500;
+const MAX_DEPTH$1 = 8;
 /**
 * Single-file workspace memory conventions. Root files are matched by exact
 * relative path; directory rules classify every `.md` found below their base.
@@ -5826,7 +5839,7 @@ const ROOT_FILES = {
 		tool: "paper"
 	}
 };
-const SKILL_BASES = [
+const SKILL_BASES$1 = [
 	{
 		base: ".claude/skills",
 		tool: "claude"
@@ -5931,7 +5944,7 @@ var WorkspaceImporter = class {
 		let updated = 0;
 		let unchanged = 0;
 		for (const { rel, abs, rule } of discovered) {
-			const raw = readFileSafe(abs);
+			const raw = readFileSafe$1(abs);
 			if (raw === null) continue;
 			const content = stripFrontmatter(raw).slice(0, this.maxContentChars).trim();
 			if (!content) continue;
@@ -6002,14 +6015,14 @@ var WorkspaceImporter = class {
 			const abs = join(cwd, rel);
 			if (isFile(abs)) add(abs);
 		}
-		for (const { base } of SKILL_BASES) {
+		for (const { base } of SKILL_BASES$1) {
 			const dir = join(cwd, base);
-			if (!isDirectory(dir)) continue;
+			if (!isDirectory$1(dir)) continue;
 			for (const abs of collectMarkdown(dir, "SKILL.md")) add(abs);
 		}
 		for (const { base } of DIR_RULES) {
 			const dir = join(cwd, base);
-			if (!isDirectory(dir)) continue;
+			if (!isDirectory$1(dir)) continue;
 			for (const abs of collectMarkdown(dir)) add(abs);
 		}
 		return discovered;
@@ -6018,7 +6031,7 @@ var WorkspaceImporter = class {
 function classify(rel) {
 	const root = ROOT_FILES[rel];
 	if (root) return root;
-	for (const { base, tool } of SKILL_BASES) if (rel.startsWith(`${base}/`)) return {
+	for (const { base, tool } of SKILL_BASES$1) if (rel.startsWith(`${base}/`)) return {
 		kind: "skill",
 		tool
 	};
@@ -6036,7 +6049,7 @@ function classify(rel) {
 function collectMarkdown(dir, onlyBasename) {
 	const out = [];
 	const walk = (current, depth) => {
-		if (depth > MAX_DEPTH || out.length >= MAX_FILES) return;
+		if (depth > MAX_DEPTH$1 || out.length >= MAX_FILES$1) return;
 		let entries;
 		try {
 			entries = readdirSync(current, { withFileTypes: true });
@@ -6061,7 +6074,7 @@ function stripFrontmatter(text) {
 	if (rest.startsWith("\n")) rest = rest.slice(1);
 	return rest;
 }
-function readFileSafe(path) {
+function readFileSafe$1(path) {
 	try {
 		return readFileSync(path, "utf8");
 	} catch {
@@ -6084,7 +6097,7 @@ function isFile(path) {
 		return false;
 	}
 }
-function isDirectory(path) {
+function isDirectory$1(path) {
 	try {
 		return statSync(path).isDirectory();
 	} catch {
@@ -6497,6 +6510,348 @@ function isRecord(value) {
 	return typeof value === "object" && value !== null;
 }
 //#endregion
+//#region src/workspace/skill-discovery.ts
+/** Skill directories relative to a root (project or home). */
+const SKILL_BASES = [
+	{
+		base: ".claude/skills",
+		tool: "claude"
+	},
+	{
+		base: ".codex/skills",
+		tool: "codex"
+	},
+	{
+		base: ".copilot/skills",
+		tool: "copilot"
+	},
+	{
+		base: ".agent/skills",
+		tool: "agent"
+	},
+	{
+		base: ".paper/skills",
+		tool: "paper"
+	},
+	{
+		base: ".paper/agents/skills",
+		tool: "paper-agents"
+	}
+];
+SKILL_BASES.map((b) => b.base);
+const MAX_DEPTH = 8;
+const MAX_FILES = 500;
+/**
+* Convert a SkillItem (from skills table) to a SkillSummary.
+* Uses source.path when available (from disk-hydrated skills) for correct paths.
+*/
+function skillItemToSummary(skill, basePath = ".paper/agents/skills") {
+	const sourcePath = skill.source?.path;
+	const isDiskImport = skill.source?.runtime === "disk-import" || skill.source?.runtime === "disk-hydrate";
+	return {
+		name: skill.name,
+		trigger: extractTriggerSummary(skill.body.trigger),
+		usageCount: skill.usageCount,
+		promoted: skill.promoted ?? false,
+		dormant: skill.dormant ?? false,
+		path: sourcePath ? toDisplayPath(sourcePath) : `${basePath}/${skill.name}/SKILL.md`,
+		source: isDiskImport ? "human" : "evo",
+		scope: skill.scope
+	};
+}
+/** Convert absolute path to display path (~/ for home, relative for project) */
+function toDisplayPath(absPath) {
+	const home = homedir();
+	if (absPath.startsWith(home + "/")) return "~/" + absPath.slice(home.length + 1);
+	return absPath;
+}
+/**
+* Discover on-disk SKILL.md files in a directory and return summaries.
+* These are files that exist on disk but may not be in the database yet.
+*/
+function discoverSkillFiles(root, scope) {
+	const results = [];
+	for (const { base } of SKILL_BASES) {
+		const dir = join(root, base);
+		if (!isDirectory(dir)) continue;
+		for (const abs of collectSkillMd(dir)) {
+			const rel = relative(root, abs).split(sep).join("/");
+			const content = readFileSafe(abs);
+			if (!content) continue;
+			const trigger = getTriggerFromParsedOrContent(parseSkillContent(stripFrontmatter(content)), content);
+			results.push({
+				summary: {
+					name: extractSkillName(rel),
+					trigger: extractTriggerSummary(trigger),
+					usageCount: 0,
+					promoted: false,
+					dormant: false,
+					path: rel,
+					source: "disk",
+					scope
+				},
+				abs
+			});
+		}
+	}
+	return results;
+}
+/** Extract trigger from parsed content, or fallback to first non-empty line */
+function getTriggerFromParsedOrContent(parsed, content) {
+	if (parsed?.trigger) return parsed.trigger;
+	return content.split("\n").filter((l) => l.trim() && !l.startsWith("#"))[0]?.trim() ?? "";
+}
+/**
+* Discover global (home directory) skill files.
+*/
+function discoverGlobalSkillFiles() {
+	const home = homedir();
+	const scope = { type: "global" };
+	const results = [];
+	for (const { base } of SKILL_BASES) {
+		const dir = join(home, base);
+		if (!isDirectory(dir)) continue;
+		for (const abs of collectSkillMd(dir)) {
+			const rel = relative(home, abs).split(sep).join("/");
+			const content = readFileSafe(abs);
+			if (!content) continue;
+			const parsed = parseSkillContent(stripFrontmatter(content));
+			results.push({
+				summary: {
+					name: extractSkillName(rel),
+					trigger: parsed ? extractTriggerSummary(parsed.trigger ?? "") : "",
+					usageCount: 0,
+					promoted: false,
+					dormant: false,
+					path: `~/${rel}`,
+					source: "disk",
+					scope
+				},
+				abs
+			});
+		}
+	}
+	return results;
+}
+/**
+* Parse SKILL.md content to extract sections.
+*/
+function parseSkillContent(content) {
+	if (!content.trim()) return null;
+	const sections = {};
+	const lines = content.split("\n");
+	let currentSection = null;
+	let currentContent = [];
+	const flushSection = () => {
+		if (currentSection && currentContent.length) sections[currentSection] = currentContent.join("\n").trim();
+		currentContent = [];
+	};
+	for (const line of lines) {
+		const sectionMatch = line.match(/^##\s+(.+)$/i);
+		if (sectionMatch) {
+			flushSection();
+			const heading = sectionMatch[1].toLowerCase().trim();
+			if (heading === "purpose") currentSection = "purpose";
+			else if (heading === "when to use" || heading === "trigger") currentSection = "trigger";
+			else if (heading === "steps") currentSection = "steps";
+			else if (heading === "verification" || heading === "check") currentSection = "check";
+			else if (heading === "reflex") currentSection = "reflex";
+			else currentSection = null;
+		} else if (currentSection) currentContent.push(line);
+	}
+	flushSection();
+	return Object.keys(sections).length ? sections : null;
+}
+/**
+* Extract skill name from a file path like `.claude/skills/git-workflow/SKILL.md`.
+*/
+function extractSkillName(path) {
+	const parts = path.split("/");
+	const skillMdIdx = parts.findIndex((p) => p.toLowerCase() === "skill.md");
+	if (skillMdIdx > 0) return parts[skillMdIdx - 1];
+	return parts[parts.length - 2] ?? parts[parts.length - 1] ?? "unknown";
+}
+function extractTriggerSummary(trigger, maxLen = 80) {
+	return truncate$1((trigger.split("\n")[0] ?? trigger).replace(/^[-*]\s*/, "").trim(), maxLen);
+}
+function truncate$1(text, maxLen) {
+	if (text.length <= maxLen) return text;
+	return `${text.slice(0, maxLen - 3)}...`;
+}
+function collectSkillMd(dir) {
+	const out = [];
+	const walk = (current, depth) => {
+		if (depth > MAX_DEPTH || out.length >= MAX_FILES) return;
+		let entries;
+		try {
+			entries = readdirSync(current, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) if (entry.isDirectory()) walk(join(current, entry.name), depth + 1);
+		else if (entry.isFile() && entry.name === "SKILL.md") out.push(join(current, entry.name));
+	};
+	walk(dir, 0);
+	return out;
+}
+function readFileSafe(path) {
+	try {
+		return readFileSync(path, "utf8");
+	} catch {
+		return null;
+	}
+}
+function isDirectory(path) {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+//#endregion
+//#region src/hook/catalog.ts
+/**
+* Merge database skills with disk-discovered SKILL.md files.
+* Disk files not yet in the database appear as "disk" source.
+* Deduplication uses both path and name to handle absolute/relative path mismatches.
+*/
+function mergeSkillsWithDisk(dbSkills, projectRoot) {
+	const summaries = [];
+	const seenPaths = /* @__PURE__ */ new Set();
+	const seenNames = /* @__PURE__ */ new Set();
+	for (const skill of dbSkills) {
+		const summary = skillItemToSummary(skill);
+		summaries.push(summary);
+		seenPaths.add(summary.path.toLowerCase());
+		seenNames.add(`${skill.scope.type}:${skill.name}`.toLowerCase());
+	}
+	const globalDisk = discoverGlobalSkillFiles();
+	for (const { summary } of globalDisk) {
+		const nameKey = `global:${summary.name}`.toLowerCase();
+		if (!seenPaths.has(summary.path.toLowerCase()) && !seenNames.has(nameKey)) {
+			seenPaths.add(summary.path.toLowerCase());
+			seenNames.add(nameKey);
+			summaries.push(summary);
+		}
+	}
+	if (projectRoot) {
+		const projectDisk = discoverSkillFiles(projectRoot, {
+			type: "project",
+			id: projectRoot
+		});
+		for (const { summary, abs } of projectDisk) {
+			const nameKey = `project:${summary.name}`.toLowerCase();
+			const absLower = abs.toLowerCase();
+			if (!(seenPaths.has(summary.path.toLowerCase()) || seenPaths.has(absLower) || seenNames.has(nameKey) || [...seenPaths].some((p) => p.endsWith(summary.path.toLowerCase())))) {
+				seenPaths.add(summary.path.toLowerCase());
+				seenPaths.add(absLower);
+				seenNames.add(nameKey);
+				summaries.push(summary);
+			}
+		}
+	}
+	return summaries;
+}
+/**
+* Build catalog entries from skills.
+*/
+function skillsToCatalogEntries(skills) {
+	return skills.map((skill) => ({
+		type: "skill",
+		name: skill.name,
+		description: skill.trigger,
+		path: skill.path,
+		scope: formatScope(skill.scope),
+		source: skill.source,
+		usageCount: skill.usageCount,
+		promoted: skill.promoted,
+		dormant: skill.dormant
+	}));
+}
+/**
+* Build catalog entries from memories.
+*/
+function memoriesToCatalogEntries(memories) {
+	return memories.map((memory) => ({
+		type: "memory",
+		name: memory.title,
+		description: truncate(memory.content, 80),
+		path: memory.source?.path ?? "",
+		scope: formatScope(memory.scope),
+		source: memory.source?.runtime ?? "unknown",
+		usageCount: memory.usageCount
+	}));
+}
+function formatScope(scope) {
+	if (scope.type === "global") return "global";
+	if (scope.type === "project") {
+		const id = scope.id ?? "";
+		const home = homedir();
+		if (id.startsWith(home + "/")) return `project:~/${id.slice(home.length + 1)}`;
+		return `project:${id}`;
+	}
+	return `${scope.type}:${scope.id ?? ""}`;
+}
+function truncate(text, maxLen) {
+	const firstLine = text.split("\n")[0] ?? text;
+	if (firstLine.length <= maxLen) return firstLine;
+	return `${firstLine.slice(0, maxLen - 3)}...`;
+}
+/**
+* Format catalog entries as terminal-readable text.
+* Typographic, provenance visible, no emoji badges, no cards.
+*/
+function formatCatalog(result, section = "all") {
+	const lines = [];
+	if (section === "skills" || section === "all") {
+		lines.push("## Skills");
+		lines.push("");
+		if (result.skills.length === 0) lines.push("  (none)");
+		else {
+			const sorted = [...result.skills].sort((a, b) => {
+				if (a.promoted && !b.promoted) return -1;
+				if (!a.promoted && b.promoted) return 1;
+				return b.usageCount - a.usageCount;
+			});
+			for (const entry of sorted) lines.push(formatSkillEntry(entry));
+		}
+		lines.push("");
+	}
+	if (section === "memory" || section === "all") {
+		lines.push("## Memory");
+		lines.push("");
+		if (result.memories.length === 0) lines.push("  (none)");
+		else {
+			const sorted = [...result.memories].sort((a, b) => b.usageCount - a.usageCount);
+			for (const entry of sorted) lines.push(formatMemoryEntry(entry));
+		}
+		lines.push("");
+	}
+	return lines.join("\n");
+}
+function formatSkillEntry(entry) {
+	const flags = [];
+	if (entry.promoted) flags.push("promoted");
+	if (entry.dormant) flags.push("dormant");
+	const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+	const sourceStr = entry.source !== "evo" ? ` (${entry.source})` : "";
+	return [
+		`  - ${entry.name}${flagStr}${sourceStr}`,
+		`    trigger: ${entry.description || "(no trigger)"}`,
+		`    path: ${entry.path || "(in-memory)"}`,
+		`    scope: ${entry.scope}, uses: ${entry.usageCount}`
+	].join("\n");
+}
+function formatMemoryEntry(entry) {
+	const sourceStr = entry.source && entry.source !== "evo" ? ` (${entry.source})` : "";
+	const pathStr = entry.path ? `\n    path: ${entry.path}` : "";
+	return [
+		`  - ${entry.name}${sourceStr}`,
+		`    ${entry.description}`,
+		`    scope: ${entry.scope}, uses: ${entry.usageCount}${pathStr}`
+	].join("\n");
+}
+//#endregion
 //#region src/hook/cli.ts
 function hookConfig(env = process.env) {
 	return {
@@ -6604,12 +6959,60 @@ function openService() {
 		store
 	};
 }
+/**
+* Build the full catalog of skills and memories for the given scopes.
+* Merges database entries with disk-discovered SKILL.md files.
+*/
+async function buildCatalog(service, store, cwd) {
+	const scopes = hookScopes(cwd);
+	const projectRoot = cwd ? canonicalPath(cwd) : void 0;
+	return {
+		skills: skillsToCatalogEntries(mergeSkillsWithDisk(await service.listSkills({
+			scopes,
+			includeDormant: true,
+			limit: 1e3
+		}), projectRoot)),
+		memories: memoriesToCatalogEntries(await service.recall({
+			scopes,
+			limit: 1e3
+		}))
+	};
+}
+/**
+* Run the list subcommand: output catalog to stdout.
+*/
+async function runList(section, cwd) {
+	const { service, store } = openService();
+	try {
+		const output = formatCatalog(await buildCatalog(service, store, cwd), section);
+		process.stdout.write(output);
+	} finally {
+		store.close?.();
+	}
+}
+/** Parse --cwd=<path> or --cwd <path> from args, return the rest and the cwd value. */
+function parseCwdArg(args) {
+	const rest = [];
+	let cwd;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--cwd" && args[i + 1]) cwd = args[++i];
+		else if (arg.startsWith("--cwd=")) cwd = arg.slice(6);
+		else rest.push(arg);
+	}
+	return {
+		cwd,
+		rest
+	};
+}
 const selfPath = fileURLToPath(import.meta.url);
 async function main() {
 	if (process.env.EVO_HOOK_DISABLE === "1") return;
 	const config = hookConfig();
-	const [mode, payloadPath] = process.argv.slice(2);
+	const { cwd: argCwd, rest: args } = parseCwdArg(process.argv.slice(2));
+	const [mode, payloadPath] = args;
 	if (mode === "flush" && payloadPath) return runDetachedFlush(payloadPath, config);
+	if (mode === "list" || mode === "list-skills" || mode === "list-memory") return runList(mode === "list-skills" ? "skills" : mode === "list-memory" ? "memory" : "all", argCwd ?? process.cwd());
 	const raw = readFileSync(0, "utf8");
 	if (!raw.trim()) return;
 	const event = JSON.parse(raw);
@@ -6743,4 +7146,4 @@ if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(selfPath
 	if (hookConfig().notify) process.stdout.write(JSON.stringify({ systemMessage: `evo · memory unavailable: ${reason}` }));
 }).finally(() => process.exit(0));
 //#endregion
-export { draftTurn, hookConfig, hookOutput, modelRunner, noticeMessage, openService, readTranscript, recallContext, reflectTurn, turnFrom };
+export { buildCatalog, draftTurn, hookConfig, hookOutput, modelRunner, noticeMessage, openService, readTranscript, recallContext, reflectTurn, runList, turnFrom };
