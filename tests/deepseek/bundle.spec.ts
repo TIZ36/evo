@@ -25,15 +25,23 @@ describe('DeepSeek profile bundle', () => {
     expect(manifest.exports['./client']).toMatchObject({ default: './dist/client.js' })
     const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
     expect(patch.indexOf('id: evo-web')).toBeGreaterThan(patch.indexOf('id: evo-deepseek'))
-    expect(patch).toMatch(/name: evo\n/)
+    // The carrier row is named by the package itself: dsh-client-modules keys the
+    // client graph row on the resolved package name, so any drift from the
+    // published name makes the bundle unreachable.
+    expect(patch).toContain(`name: "${manifest.name}"\n`)
+    expect(patch).toContain(`name: "${manifest.name}/cordis"`)
+    expect(patch).toContain(`name: "${manifest.name}/deepseek"`)
   })
 })
 
 describe('web client bundle', () => {
-  it('is a ModuleLoader factory registering the evo entry', () => {
+  it('is a ModuleLoader factory registering under the package name', () => {
     const client = readFileSync(join(root, 'src/client/client.js'), 'utf8')
+    const { name } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     expect(client).toContain('window.__ModuleLoader__.load({')
-    expect(client).toContain("id: 'evo'")
+    // dsh-client-modules rejects a bundle whose registration id is not the
+    // package name it resolved the row from.
+    expect(client).toContain(`id: '${name}'`)
     expect(client).toContain("settings.section")
     expect(client).toContain("exports.inject = ['slots']")
   })
