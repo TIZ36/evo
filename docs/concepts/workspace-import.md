@@ -1,6 +1,8 @@
 # Workspace Import
 
-When a session opens in a project directory, evo imports existing agent memory and skill files into the project scope. This imported knowledge is then recalled like any other memory.
+When a session opens in a project directory, evo imports existing agent memory files into the project scope. This imported knowledge is then recalled like any other memory.
+
+Skill files are **not** imported. A `SKILL.md` reaches the model as a catalog entry (name, trigger, path) discovered from disk at recall time — see [Skills vs Memories](skills-vs-memories.md). Copying its body into a memory row would duplicate what is already on disk, and memories render inline while skills render as one line.
 
 ## What Gets Imported
 
@@ -11,7 +13,6 @@ When a session opens in a project directory, evo imports existing agent memory a
 | `.paper/AGENT_MEMORY.md`, `.paper/**/*.md` | fact |
 | `.claude/commands/**/*.md`, `.claude/agents/**/*.md` | procedure |
 | `.codex/**/*.md`, `.copilot/instructions/**/*.md`, `.copilot/prompts/**/*.md`, `.agent/**/*.md` | constraint |
-| `.claude/skills/**/SKILL.md`, `.codex/skills/**/SKILL.md`, `.copilot/skills/**/SKILL.md`, `.agent/skills/**/SKILL.md`, `.paper/skills/**/SKILL.md`, `.paper/agents/skills/**/SKILL.md` | skill |
 
 ## How Import Works
 
@@ -24,6 +25,9 @@ Each imported file becomes one memory item with:
 ### What's Skipped
 
 - YAML frontmatter is stripped
+- `SKILL.md` files, wherever they sit — they belong to the disk-skill catalog
+- Everything under `.paper/agents/skills/` — evo's own skills, owned by the skills table
+- Cache directories: `.tmp/`, `node_modules/`, `.git/`
 - `*.memory.md` skill-experience files are skipped
 - Empty documents are skipped
 
@@ -33,7 +37,11 @@ Import is idempotent:
 
 - Items are upserted by `(project scope, title)`
 - Changed files update existing items in place
-- Removed files are **not** deleted — evo never removes imported items
+- Rows whose file has disappeared are pruned — an import row is a projection of a
+  file, and a projection of nothing is noise
+
+Pruning keys on `source.runtime`, never on the `workspace-import` tag: a memory
+evo distilled *about* importing can carry that tag and has no file behind it.
 
 A project is imported once on first session start. To force a re-import:
 

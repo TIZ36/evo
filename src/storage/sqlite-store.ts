@@ -1,9 +1,9 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ConsolidationStore, MemoryEventSink, MemoryStore, ReplayStore, SkillStore } from '../core/contracts.js'
 import type { MemoryEvent, MemoryEventRecord } from '../core/contracts.js'
-import { memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, SKILL_PROMOTION_THRESHOLD, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
+import { IMPORT_RUNTIME, IMPORT_SKIP_DIR_NAMES, memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, SKILL_FILE, SKILL_PROMOTION_THRESHOLD, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js'
 
 type Row = Record<string, unknown>
@@ -15,19 +15,69 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
     mkdirSync(dirname(path), { recursive: true })
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;')
+    // SCHEMA_SQL stamps the current version, so the version this store was
+    // last opened at has to be read before it runs.
+    const previousVersion = this.readVersion()
     this.db.exec(SCHEMA_SQL)
 
-    this.runMigrations()
+    this.runMigrations(previousVersion)
 
     const version = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
     if (Number(version?.version) !== SCHEMA_VERSION) throw new Error(`unsupported evo schema version: ${String(version?.version)}`)
   }
 
-  private runMigrations(): void {
+  /** Schema version of an existing store, or null for one being created now. */
+  private readVersion(): number | null {
+    try {
+      const row = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
+      return row === undefined ? null : Number(row.version)
+    } catch {
+      return null
+    }
+  }
+
+  private runMigrations(previousVersion: number | null): void {
     try {
       this.db.exec('ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0')
     } catch {
       // Column already exists - migration already applied
+    }
+    if (previousVersion !== null && previousVersion < 6) this.evictImportedNonMemories()
+  }
+
+  /**
+   * v6, one time: evict workspace-import rows that were never memory.
+   *
+   * Earlier versions copied whole files into `memories`, including two classes
+   * the recall path already reaches without a stored copy — `SKILL.md` bodies
+   * (the disk-skill catalog lists each as a single line, while a memory row
+   * renders its whole body inline) and documents under a tool's cache
+   * directory. A row whose file has since disappeared goes too: it is a
+   * projection of nothing. The importer no longer creates any of the three.
+   *
+   * Keyed on `source.runtime`, never on the import tag — memories evo
+   * distilled *about* the importer carry that tag and must survive.
+   */
+  private evictImportedNonMemories(): void {
+    const rows = this.db
+      .prepare("SELECT id, title, json_extract(source_json, '$.path') AS path FROM memories WHERE json_extract(source_json, '$.runtime') = ?")
+      .all(IMPORT_RUNTIME) as Row[]
+    const doomed = rows.filter(row => {
+      const title = String(row.title)
+      if (title === SKILL_FILE || title.endsWith(`/${SKILL_FILE}`)) return true
+      if (IMPORT_SKIP_DIR_NAMES.some(name => title.includes(`/${name}/`) || title.startsWith(`${name}/`))) return true
+      const path = row.path == null ? null : String(row.path)
+      return path === null || !existsSync(path)
+    })
+    if (!doomed.length) return
+    const remove = this.db.prepare('DELETE FROM memories WHERE id = ?')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of doomed) remove.run(String(row.id))
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 

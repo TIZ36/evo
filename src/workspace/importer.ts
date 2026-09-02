@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import type { MemoryStore } from '../core/contracts.js'
-import type { MemoryItem, MemoryKind, MemoryScope } from '../core/types.js'
+import { IMPORT_RUNTIME, IMPORT_SKIP_DIR_NAMES, SKILL_FILE, type MemoryItem, type MemoryKind, type MemoryScope } from '../core/types.js'
 
 export type WorkspaceImportResult = {
   scope: MemoryScope
@@ -11,6 +11,8 @@ export type WorkspaceImportResult = {
   created: number
   updated: number
   unchanged: number
+  /** Rows dropped because the file they project no longer exists. */
+  pruned: number
   /** True when the scope was already imported and `force` was not set. */
   skipped: boolean
 }
@@ -44,13 +46,19 @@ const ROOT_FILES: Record<string, Rule> = {
   '.paper/AGENT_MEMORY.md': { kind: 'fact', tool: 'paper' },
 }
 
-const SKILL_BASES = [
-  { base: '.claude/skills', tool: 'claude' },
-  { base: '.codex/skills', tool: 'codex' },
-  { base: '.copilot/skills', tool: 'copilot' },
-  { base: '.agent/skills', tool: 'agent' },
-  { base: '.paper/skills', tool: 'paper' },
-]
+/**
+ * Skill packages are never imported as memories. A `SKILL.md` is surfaced to
+ * the model as a catalog entry (name, trigger, path) by `collectDiskSkills`
+ * at recall time, straight from disk. Copying its body into a memory row
+ * duplicates state that is already on disk and — because memories render
+ * inline while skills render as one line — spends the whole recall budget
+ * doing it.
+ *
+ * A tool's cache under a memory root is not the user's memory either:
+ * `.codex/.tmp/bundled-marketplaces/**` is vendored plugin documentation that
+ * no one wrote for this project.
+ */
+const SKIP_DIRS = new Set<string>(IMPORT_SKIP_DIR_NAMES)
 
 /** Evo-owned skill directory - skills here are managed through the skills table, not imported. */
 export const EVO_SKILL_ROOT = '.paper/agents/skills'
@@ -82,16 +90,18 @@ export class WorkspaceImporter {
    * workspace as project-scoped memories.
    *
    * Idempotent: items are upserted by `(scope, title)` where title is the file's
-   * path relative to the workspace root. Files that disappeared are never
-   * deleted, so user-reflected memories in the same scope are left untouched.
-   * Unless `force` is set, a scope that already carries any `workspace-import`
-   * tagged item is skipped without scanning.
+   * path relative to the workspace root. A row whose file has since disappeared
+   * is pruned — the row is a projection of the file, and a projection of
+   * nothing is noise. Only rows this importer wrote are ever touched, so
+   * user-reflected memories in the same scope survive even when they carry the
+   * import tag. Unless `force` is set, a scope that already carries any
+   * `workspace-import` tagged item is skipped without scanning.
    */
   async import(cwd: string, options: { force?: boolean } = {}): Promise<WorkspaceImportResult> {
     const scope: MemoryScope = { type: 'project', id: cwd }
     const existing = await this.store.list({ scopes: [scope], tags: [IMPORT_TAG], limit: 1000 })
     if (!options.force && existing.length > 0) {
-      return { scope, files: 0, created: 0, updated: 0, unchanged: 0, skipped: true }
+      return { scope, files: 0, created: 0, updated: 0, unchanged: 0, pruned: 0, skipped: true }
     }
 
     const discovered = this.discover(cwd)
@@ -116,7 +126,7 @@ export class WorkspaceImporter {
           content,
           updatedAt: now,
           tags: old.tags.includes(IMPORT_TAG) ? old.tags : [...old.tags, IMPORT_TAG],
-          source: { runtime: 'workspace-import', path: abs },
+          source: { runtime: IMPORT_RUNTIME, path: abs },
         }
         await this.store.put(item)
         updated += 1
@@ -131,13 +141,34 @@ export class WorkspaceImporter {
           usageCount: 0,
           createdAt: now,
           updatedAt: now,
-          source: { runtime: 'workspace-import', path: abs },
+          source: { runtime: IMPORT_RUNTIME, path: abs },
         }
         await this.store.put(item)
         created += 1
       }
     }
-    return { scope, files: discovered.length, created, updated, unchanged, skipped: false }
+    const pruned = await this.prune(existing, new Set(discovered.map(entry => entry.rel.toLocaleLowerCase())))
+    return { scope, files: discovered.length, created, updated, unchanged, pruned, skipped: false }
+  }
+
+  /**
+   * Drop rows this importer wrote whose file is no longer discoverable.
+   *
+   * Keyed on `source.runtime`, never on the import tag: a memory evo distilled
+   * *about* the importer can carry that tag, and it has no file behind it —
+   * pruning by tag would delete evo's own work.
+   */
+  private async prune(existing: MemoryItem[], discoveredTitles: Set<string>): Promise<number> {
+    let pruned = 0
+    for (const item of existing) {
+      if (item.source?.runtime !== IMPORT_RUNTIME) continue
+      if (discoveredTitles.has(item.title.toLocaleLowerCase())) continue
+      const path = item.source.path
+      if (path && isFile(path)) continue
+      await this.store.delete(item.id)
+      pruned += 1
+    }
+    return pruned
   }
 
   private discover(cwd: string): Array<{ rel: string; abs: string; rule: Rule }> {
@@ -157,11 +188,6 @@ export class WorkspaceImporter {
       const abs = join(cwd, rel)
       if (isFile(abs)) add(abs)
     }
-    for (const { base } of SKILL_BASES) {
-      const dir = join(cwd, base)
-      if (!isDirectory(dir)) continue
-      for (const abs of collectMarkdown(dir, 'SKILL.md')) add(abs)
-    }
     for (const { base } of DIR_RULES) {
       const dir = join(cwd, base)
       if (!isDirectory(dir)) continue
@@ -174,9 +200,10 @@ export class WorkspaceImporter {
 function classify(rel: string): Rule | null {
   const root = ROOT_FILES[rel]
   if (root) return root
-  for (const { base, tool } of SKILL_BASES) {
-    if (rel.startsWith(`${base}/`)) return { kind: 'skill', tool }
-  }
+  // Skill packages belong to the disk-skill catalog, evo's own materialized
+  // skills to the skills table. Neither is a memory.
+  if (rel.endsWith(`/${SKILL_FILE}`) || rel === SKILL_FILE) return null
+  if (rel.startsWith(`${EVO_SKILL_ROOT}/`)) return null
   for (const { base, kind, tool } of DIR_RULES) {
     if (rel.startsWith(`${base}/`)) return { kind, tool }
   }
@@ -184,11 +211,11 @@ function classify(rel: string): Rule | null {
 }
 
 /**
- * Recursively collect `.md` files below `dir` (excluding `*.memory.md`, the
- * skill-level experience files that are not imported). When `onlyBasename` is
- * given, only files with that exact basename are kept (e.g. `SKILL.md`).
+ * Recursively collect `.md` files below `dir`, excluding `*.memory.md` (the
+ * skill-level experience files), `SKILL.md` (owned by the disk-skill catalog),
+ * and anything under a cache directory.
  */
-function collectMarkdown(dir: string, onlyBasename?: string): string[] {
+function collectMarkdown(dir: string): string[] {
   const out: string[] = []
   const walk = (current: string, depth: number) => {
     if (depth > MAX_DEPTH || out.length >= MAX_FILES) return
@@ -200,9 +227,10 @@ function collectMarkdown(dir: string, onlyBasename?: string): string[] {
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue
         walk(join(current, entry.name), depth + 1)
       } else if (entry.isFile() && entry.name.endsWith('.md') && !entry.name.endsWith('.memory.md')) {
-        if (onlyBasename && entry.name !== onlyBasename) continue
+        if (entry.name === SKILL_FILE) continue
         out.push(join(current, entry.name))
       }
     }

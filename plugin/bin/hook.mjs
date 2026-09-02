@@ -4093,6 +4093,19 @@ const memoryScopeSchema = lazy(() => object({
 		message: `${scope.type} scope requires an id`
 	});
 }));
+/**
+* Workspace-import vocabulary, shared by the importer and by the storage
+* migration that evicts what earlier versions imported. Both must agree on
+* what an imported row is, or the migration deletes the wrong rows.
+*/
+/** `source.runtime` of every row the workspace importer owns — the only safe delete key. */
+const IMPORT_RUNTIME = "workspace-import";
+/** Directory names the importer never descends into: tool caches, not user memory. */
+const IMPORT_SKIP_DIR_NAMES = [
+	".tmp",
+	"node_modules",
+	".git"
+];
 const memoryKindSchema = _enum([
 	"fact",
 	"preference",
@@ -4193,21 +4206,40 @@ function balancedJson(text) {
 //#endregion
 //#region src/core/prompt.ts
 /**
+* How much of an imported file's body may be rendered inline. An imported
+* memory is a projection of a file the model can Read in full; quoting the
+* whole thing costs the recall budget many times over what the excerpt buys.
+*/
+const IMPORT_EXCERPT_CHARS = 400;
+/** Render one memory as a bullet, quoting an imported file only in excerpt. */
+function renderItem(item) {
+	if (item.source?.runtime !== "workspace-import" || item.content.length <= IMPORT_EXCERPT_CHARS) return `- [${item.kind}] **${item.title}**: ${item.content}\n`;
+	const excerpt = item.content.slice(0, IMPORT_EXCERPT_CHARS).trimEnd();
+	const path = item.source.path ?? item.title;
+	return `- [${item.kind}] **${item.title}**: ${excerpt}… (read \`${path}\` for the rest)\n`;
+}
+/**
 * Render recalled memories and skill catalog into model context.
 *
 * Memories are rendered inline. Skills are listed as catalog entries only —
 * the model can Read the SKILL.md if needed, keeping context small.
+*
+* An item too large for the remaining budget is skipped rather than ending the
+* loop: recall is ordered by usage, not by size, so one oversized row must not
+* cost every better-ranked row behind it.
 */
 function renderMemoryContext(items, skills = [], maxChars = 6e3) {
 	if (!items.length && !skills.length || maxChars <= 0) return "";
 	let output = "";
 	if (items.length) {
-		output = "# Relevant memory\n";
+		const head = "# Relevant memory\n";
+		output = head;
 		for (const item of items) {
-			const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`;
-			if (output.length + line.length > maxChars) break;
+			const line = renderItem(item);
+			if (output.length + line.length > maxChars) continue;
 			output += line;
 		}
+		if (output === head) output = "";
 	}
 	if (skills.length && output.length < maxChars) {
 		const skillHead = output ? "\n# Available skills (Read SKILL.md on use)\n" : "# Available skills (Read SKILL.md on use)\n";
@@ -5414,8 +5446,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 );
 INSERT INTO schema_meta(version)
-SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 5 WHERE version < 5;
+SELECT 6 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 6 WHERE version < 6;
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -5506,15 +5538,58 @@ var SqliteMemoryStore = class {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new DatabaseSync(path);
 		this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+		const previousVersion = this.readVersion();
 		this.db.exec(SCHEMA_SQL);
-		this.runMigrations();
+		this.runMigrations(previousVersion);
 		const version = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-		if (Number(version?.version) !== 5) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+		if (Number(version?.version) !== 6) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
 	}
-	runMigrations() {
+	/** Schema version of an existing store, or null for one being created now. */
+	readVersion() {
+		try {
+			const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
+			return row === void 0 ? null : Number(row.version);
+		} catch {
+			return null;
+		}
+	}
+	runMigrations(previousVersion) {
 		try {
 			this.db.exec("ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0");
 		} catch {}
+		if (previousVersion !== null && previousVersion < 6) this.evictImportedNonMemories();
+	}
+	/**
+	* v6, one time: evict workspace-import rows that were never memory.
+	*
+	* Earlier versions copied whole files into `memories`, including two classes
+	* the recall path already reaches without a stored copy — `SKILL.md` bodies
+	* (the disk-skill catalog lists each as a single line, while a memory row
+	* renders its whole body inline) and documents under a tool's cache
+	* directory. A row whose file has since disappeared goes too: it is a
+	* projection of nothing. The importer no longer creates any of the three.
+	*
+	* Keyed on `source.runtime`, never on the import tag — memories evo
+	* distilled *about* the importer carry that tag and must survive.
+	*/
+	evictImportedNonMemories() {
+		const doomed = this.db.prepare("SELECT id, title, json_extract(source_json, '$.path') AS path FROM memories WHERE json_extract(source_json, '$.runtime') = ?").all(IMPORT_RUNTIME).filter((row) => {
+			const title = String(row.title);
+			if (title === "SKILL.md" || title.endsWith(`/SKILL.md`)) return true;
+			if (IMPORT_SKIP_DIR_NAMES.some((name) => title.includes(`/${name}/`) || title.startsWith(`${name}/`))) return true;
+			const path = row.path == null ? null : String(row.path);
+			return path === null || !existsSync(path);
+		});
+		if (!doomed.length) return;
+		const remove = this.db.prepare("DELETE FROM memories WHERE id = ?");
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			for (const row of doomed) remove.run(String(row.id));
+			this.db.exec("COMMIT");
+		} catch (error) {
+			this.db.exec("ROLLBACK");
+			throw error;
+		}
 	}
 	async get(id) {
 		const row = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
@@ -5846,28 +5921,19 @@ const ROOT_FILES = {
 		tool: "paper"
 	}
 };
-const SKILL_BASES$1 = [
-	{
-		base: ".claude/skills",
-		tool: "claude"
-	},
-	{
-		base: ".codex/skills",
-		tool: "codex"
-	},
-	{
-		base: ".copilot/skills",
-		tool: "copilot"
-	},
-	{
-		base: ".agent/skills",
-		tool: "agent"
-	},
-	{
-		base: ".paper/skills",
-		tool: "paper"
-	}
-];
+/**
+* Skill packages are never imported as memories. A `SKILL.md` is surfaced to
+* the model as a catalog entry (name, trigger, path) by `collectDiskSkills`
+* at recall time, straight from disk. Copying its body into a memory row
+* duplicates state that is already on disk and — because memories render
+* inline while skills render as one line — spends the whole recall budget
+* doing it.
+*
+* A tool's cache under a memory root is not the user's memory either:
+* `.codex/.tmp/bundled-marketplaces/**` is vendored plugin documentation that
+* no one wrote for this project.
+*/
+const SKIP_DIRS = new Set(IMPORT_SKIP_DIR_NAMES);
 const DIR_RULES = [
 	{
 		base: ".claude/commands",
@@ -5922,10 +5988,12 @@ var WorkspaceImporter = class {
 	* workspace as project-scoped memories.
 	*
 	* Idempotent: items are upserted by `(scope, title)` where title is the file's
-	* path relative to the workspace root. Files that disappeared are never
-	* deleted, so user-reflected memories in the same scope are left untouched.
-	* Unless `force` is set, a scope that already carries any `workspace-import`
-	* tagged item is skipped without scanning.
+	* path relative to the workspace root. A row whose file has since disappeared
+	* is pruned — the row is a projection of the file, and a projection of
+	* nothing is noise. Only rows this importer wrote are ever touched, so
+	* user-reflected memories in the same scope survive even when they carry the
+	* import tag. Unless `force` is set, a scope that already carries any
+	* `workspace-import` tagged item is skipped without scanning.
 	*/
 	async import(cwd, options = {}) {
 		const scope = {
@@ -5943,6 +6011,7 @@ var WorkspaceImporter = class {
 			created: 0,
 			updated: 0,
 			unchanged: 0,
+			pruned: 0,
 			skipped: true
 		};
 		const discovered = this.discover(cwd);
@@ -5968,7 +6037,7 @@ var WorkspaceImporter = class {
 					updatedAt: now,
 					tags: old.tags.includes(IMPORT_TAG) ? old.tags : [...old.tags, IMPORT_TAG],
 					source: {
-						runtime: "workspace-import",
+						runtime: IMPORT_RUNTIME,
 						path: abs
 					}
 				};
@@ -5986,7 +6055,7 @@ var WorkspaceImporter = class {
 					createdAt: now,
 					updatedAt: now,
 					source: {
-						runtime: "workspace-import",
+						runtime: IMPORT_RUNTIME,
 						path: abs
 					}
 				};
@@ -5994,14 +6063,35 @@ var WorkspaceImporter = class {
 				created += 1;
 			}
 		}
+		const pruned = await this.prune(existing, new Set(discovered.map((entry) => entry.rel.toLocaleLowerCase())));
 		return {
 			scope,
 			files: discovered.length,
 			created,
 			updated,
 			unchanged,
+			pruned,
 			skipped: false
 		};
+	}
+	/**
+	* Drop rows this importer wrote whose file is no longer discoverable.
+	*
+	* Keyed on `source.runtime`, never on the import tag: a memory evo distilled
+	* *about* the importer can carry that tag, and it has no file behind it —
+	* pruning by tag would delete evo's own work.
+	*/
+	async prune(existing, discoveredTitles) {
+		let pruned = 0;
+		for (const item of existing) {
+			if (item.source?.runtime !== "workspace-import") continue;
+			if (discoveredTitles.has(item.title.toLocaleLowerCase())) continue;
+			const path = item.source.path;
+			if (path && isFile(path)) continue;
+			await this.store.delete(item.id);
+			pruned += 1;
+		}
+		return pruned;
 	}
 	discover(cwd) {
 		const seen = /* @__PURE__ */ new Set();
@@ -6022,11 +6112,6 @@ var WorkspaceImporter = class {
 			const abs = join(cwd, rel);
 			if (isFile(abs)) add(abs);
 		}
-		for (const { base } of SKILL_BASES$1) {
-			const dir = join(cwd, base);
-			if (!isDirectory$1(dir)) continue;
-			for (const abs of collectMarkdown(dir, "SKILL.md")) add(abs);
-		}
 		for (const { base } of DIR_RULES) {
 			const dir = join(cwd, base);
 			if (!isDirectory$1(dir)) continue;
@@ -6038,10 +6123,8 @@ var WorkspaceImporter = class {
 function classify(rel) {
 	const root = ROOT_FILES[rel];
 	if (root) return root;
-	for (const { base, tool } of SKILL_BASES$1) if (rel.startsWith(`${base}/`)) return {
-		kind: "skill",
-		tool
-	};
+	if (rel.endsWith(`/SKILL.md`) || rel === "SKILL.md") return null;
+	if (rel.startsWith(`.paper/agents/skills/`)) return null;
 	for (const { base, kind, tool } of DIR_RULES) if (rel.startsWith(`${base}/`)) return {
 		kind,
 		tool
@@ -6049,11 +6132,11 @@ function classify(rel) {
 	return null;
 }
 /**
-* Recursively collect `.md` files below `dir` (excluding `*.memory.md`, the
-* skill-level experience files that are not imported). When `onlyBasename` is
-* given, only files with that exact basename are kept (e.g. `SKILL.md`).
+* Recursively collect `.md` files below `dir`, excluding `*.memory.md` (the
+* skill-level experience files), `SKILL.md` (owned by the disk-skill catalog),
+* and anything under a cache directory.
 */
-function collectMarkdown(dir, onlyBasename) {
+function collectMarkdown(dir) {
 	const out = [];
 	const walk = (current, depth) => {
 		if (depth > MAX_DEPTH$1 || out.length >= MAX_FILES$1) return;
@@ -6063,9 +6146,11 @@ function collectMarkdown(dir, onlyBasename) {
 		} catch {
 			return;
 		}
-		for (const entry of entries) if (entry.isDirectory()) walk(join(current, entry.name), depth + 1);
-		else if (entry.isFile() && entry.name.endsWith(".md") && !entry.name.endsWith(".memory.md")) {
-			if (onlyBasename && entry.name !== onlyBasename) continue;
+		for (const entry of entries) if (entry.isDirectory()) {
+			if (SKIP_DIRS.has(entry.name)) continue;
+			walk(join(current, entry.name), depth + 1);
+		} else if (entry.isFile() && entry.name.endsWith(".md") && !entry.name.endsWith(".memory.md")) {
+			if (entry.name === "SKILL.md") continue;
 			out.push(join(current, entry.name));
 		}
 	};

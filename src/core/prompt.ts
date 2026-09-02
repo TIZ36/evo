@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryScope, SkillItem, Turn } from './types.js'
+import { IMPORT_RUNTIME, type MemoryItem, type MemoryScope, type SkillItem, type Turn } from './types.js'
 
 /** Catalog entry for a skill: name + trigger + path, not the full body. */
 export type SkillCatalogEntry = {
@@ -12,22 +12,46 @@ export type SkillCatalogEntry = {
 }
 
 /**
+ * How much of an imported file's body may be rendered inline. An imported
+ * memory is a projection of a file the model can Read in full; quoting the
+ * whole thing costs the recall budget many times over what the excerpt buys.
+ */
+const IMPORT_EXCERPT_CHARS = 400
+
+/** Render one memory as a bullet, quoting an imported file only in excerpt. */
+function renderItem(item: MemoryItem): string {
+  if (item.source?.runtime !== IMPORT_RUNTIME || item.content.length <= IMPORT_EXCERPT_CHARS) {
+    return `- [${item.kind}] **${item.title}**: ${item.content}\n`
+  }
+  const excerpt = item.content.slice(0, IMPORT_EXCERPT_CHARS).trimEnd()
+  const path = item.source.path ?? item.title
+  return `- [${item.kind}] **${item.title}**: ${excerpt}… (read \`${path}\` for the rest)\n`
+}
+
+/**
  * Render recalled memories and skill catalog into model context.
  *
  * Memories are rendered inline. Skills are listed as catalog entries only —
  * the model can Read the SKILL.md if needed, keeping context small.
+ *
+ * An item too large for the remaining budget is skipped rather than ending the
+ * loop: recall is ordered by usage, not by size, so one oversized row must not
+ * cost every better-ranked row behind it.
  */
 export function renderMemoryContext(items: MemoryItem[], skills: SkillCatalogEntry[] = [], maxChars = 6000): string {
   if ((!items.length && !skills.length) || maxChars <= 0) return ''
   let output = ''
 
   if (items.length) {
-    output = '# Relevant memory\n'
+    const head = '# Relevant memory\n'
+    output = head
     for (const item of items) {
-      const line = `- [${item.kind}] **${item.title}**: ${item.content}\n`
-      if (output.length + line.length > maxChars) break
+      const line = renderItem(item)
+      if (output.length + line.length > maxChars) continue
       output += line
     }
+    // Every item was too large: a bare heading says nothing.
+    if (output === head) output = ''
   }
 
   if (skills.length && output.length < maxChars) {

@@ -135,7 +135,7 @@ Lessons learned from using the skill:
 
 ### Human-written skills
 
-Skills in `.claude/skills/`, `.codex/skills/`, etc. are imported as workspace memories with `kind: skill`. They are never evicted by evo.
+Skills in `.claude/skills/`, `.codex/skills/`, etc. are never imported into the memory store. They are discovered on disk at recall time and listed as catalog entries (name, trigger, path), so the model reads a line rather than the whole body. They are never evicted by evo — the file on disk is the only copy.
 
 ### Evo-written skills
 
