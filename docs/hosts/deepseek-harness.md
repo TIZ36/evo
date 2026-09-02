@@ -12,6 +12,20 @@ For an npx-managed Harness profile:
 
 This builds the package, installs a local link through `dsh plugin`, and activates evo as a DSH bundle. The default profile is `web`; override with `DSH_PROFILE=tui` or another profile name.
 
+It prefers a `dsh` already on your `PATH`, so the CLI that writes the profile is the one that later boots it. Set `DSH_PACKAGE` to pin a released version through `npx` instead.
+
+### Re-running repairs the profile
+
+A profile can end up carrying evo under several names at once — an alias left by an older install command, or a former published name such as `evo-memory`. Each resolves to the same `cordis.patch.yml`, so DSH applies that patch once per name, inserting every evo plugin id more than once, and the profile stops booting with an error that names neither the alias nor the duplication.
+
+Re-running the installer removes them:
+
+```
+evo: removing stale evo installs from profile 'web': evo evo-memory
+```
+
+A name is only removed when it is provably evo: it resolves to a package whose manifest name is `@tiz36/evo`, or it is one of evo's former names and resolves to nothing. A name that resolves to some *other* package is reported and left alone — `evo` is a real name on the registry.
+
 The bundle uses `deepseek-official` and `deepseek-v4-flash` by default; override at launch with `EVO_PROVIDER` and `EVO_MODEL`.
 
 ## Manual Configuration
