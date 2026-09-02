@@ -60,17 +60,36 @@ if [[ ! -f "$PROFILE_MANIFEST" ]]; then
   exit 1
 fi
 
-node --input-type=module - "$PROFILE_MANIFEST" "$PROFILE_DIR" <<'NODE'
+# Self-heal: a profile can carry evo under several names at once — an alias from
+# an older install command, or a former published name. Each resolves to the
+# same cordis.patch.yml, so DSH applies that patch once per name and the profile
+# stops booting. A re-run of this script repairs that instead of inheriting it.
+CANONICAL="$(node -p "require('$SCRIPT_DIR/package.json').name")"
+STALE="$(node "$SCRIPT_DIR/scripts/profile-doctor.mjs" "$PROFILE_MANIFEST" "$PROFILE_DIR" "$CANONICAL")"
+if [[ -n "$STALE" ]]; then
+  echo "evo: removing stale evo installs from profile '$PROFILE':" $STALE
+  # shellcheck disable=SC2086 -- one name per line, none can contain whitespace
+  "${DSH_CLI[@]}" plugin --profile "$PROFILE" remove $STALE
+fi
+
+node --input-type=module - "$PROFILE_MANIFEST" "$PROFILE_DIR" "$SCRIPT_DIR" <<'NODE'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const [, , manifestPath, profileDir] = process.argv
+const [, , manifestPath, profileDir, scriptDir] = process.argv
+const { LEGACY_NAMES } = await import(join(scriptDir, 'scripts/profile-doctor.mjs'))
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 if (manifest.dependencies?.['@tiz36/evo'] === undefined) {
   throw new Error('evo is absent from profile dependencies')
 }
-if (!manifest.dsh?.profile?.bundles?.includes('@tiz36/evo')) {
+const bundles = manifest.dsh?.profile?.bundles ?? []
+if (!bundles.includes('@tiz36/evo')) {
   throw new Error('evo was installed but not activated as a DSH bundle')
+}
+// One patch layer per profile. Two would insert every evo plugin id twice.
+const evoBundles = bundles.filter(name => name === '@tiz36/evo' || LEGACY_NAMES.includes(name))
+if (evoBundles.length !== 1) {
+  throw new Error(`profile activates evo ${evoBundles.length} times: ${evoBundles.join(', ')}`)
 }
 const installed = join(profileDir, 'node_modules', '@tiz36', 'evo', 'cordis.patch.yml')
 const patch = readFileSync(installed, 'utf8')
