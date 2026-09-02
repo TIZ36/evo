@@ -6,7 +6,6 @@ import type { MemoryItem } from '../../src/core/types.js'
 import { SqliteMemoryStore } from '../../src/storage/sqlite-store.js'
 import { stripFrontmatter, WorkspaceImporter } from '../../src/workspace/importer.js'
 
-let counter = 0
 
 function fixture(): string {
   const root = join(mkdtempSync(join(tmpdir(), 'evo-import-')), 'project')
@@ -14,8 +13,11 @@ function fixture(): string {
   return root
 }
 
+/** A fresh directory per store: a fixed tmp path outlives the run, so the next
+ *  revision reopens a file the previous one wrote — a schema change then shows
+ *  up as a phantom failure on a developer machine that CI never reproduces. */
 function makeStore(): { store: SqliteMemoryStore; close: () => void } {
-  const path = join(tmpdir(), `evo-import-db-${++counter}.db`)
+  const path = join(mkdtempSync(join(tmpdir(), 'evo-import-db')), 'memory.db')
   const s = new SqliteMemoryStore(path)
   return { store: s, close: () => s.close() }
 }

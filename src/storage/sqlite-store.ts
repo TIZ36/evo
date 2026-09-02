@@ -15,38 +15,39 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
     mkdirSync(dirname(path), { recursive: true })
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;')
-    // SCHEMA_SQL stamps the current version, so the version this store was
-    // last opened at has to be read before it runs.
-    const previousVersion = this.readVersion()
     this.db.exec(SCHEMA_SQL)
 
-    this.runMigrations(previousVersion)
+    this.runMigrations()
 
     const version = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
     if (Number(version?.version) !== SCHEMA_VERSION) throw new Error(`unsupported evo schema version: ${String(version?.version)}`)
   }
 
-  /** Schema version of an existing store, or null for one being created now. */
-  private readVersion(): number | null {
-    try {
-      const row = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as Row | undefined
-      return row === undefined ? null : Number(row.version)
-    } catch {
-      return null
-    }
-  }
-
-  private runMigrations(previousVersion: number | null): void {
+  private runMigrations(): void {
     try {
       this.db.exec('ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0')
     } catch {
       // Column already exists - migration already applied
     }
-    if (previousVersion !== null && previousVersion < 6) this.evictImportedNonMemories()
+    this.once('evict-imported-non-memories', () => this.evictImportedNonMemories())
   }
 
   /**
-   * v6, one time: evict workspace-import rows that were never memory.
+   * Run a data migration the first time this store sees it, and never again.
+   *
+   * Keyed on its own marker rather than on SCHEMA_VERSION: a migration that
+   * changes no table shape must stay invisible to older builds, which check the
+   * version for equality and would otherwise refuse the file outright.
+   */
+  private once(id: string, migrate: () => void): void {
+    const seen = this.db.prepare('SELECT 1 FROM applied_migrations WHERE id = ?').get(id)
+    if (seen !== undefined) return
+    migrate()
+    this.db.prepare('INSERT OR IGNORE INTO applied_migrations(id, applied_at) VALUES (?, ?)').run(id, Date.now())
+  }
+
+  /**
+   * One time: evict workspace-import rows that were never memory.
    *
    * Earlier versions copied whole files into `memories`, including two classes
    * the recall path already reaches without a stored copy — `SKILL.md` bodies

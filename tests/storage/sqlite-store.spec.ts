@@ -59,17 +59,18 @@ describe('SqliteMemoryStore', () => {
   })
 })
 
-describe('v6 migration: imported non-memories', () => {
-  /** Open a store, downgrade its stamp to v5, and hand back the path to reopen. */
+describe('migration: imported non-memories', () => {
+  /** Seed a store as a build predating the migration left it, and hand back its path. */
   const legacyStore = async (rows: MemoryItem[]): Promise<string> => {
     const path = join(mkdtempSync(join(tmpdir(), 'evo-')), 'memory.db')
     const first = new SqliteMemoryStore(path)
     for (const row of rows) await first.put(row)
-    // The rows above predate v6; stamp the file as the version that wrote them.
-    const db = new DatabaseSync(path)
-    db.exec('UPDATE schema_meta SET version = 5')
-    db.close()
     first.close()
+    // Opening stamped the migration as applied; unstamp it so the rows above
+    // stand in for ones an older build imported.
+    const db = new DatabaseSync(path)
+    db.exec("DELETE FROM applied_migrations WHERE id = 'evict-imported-non-memories'")
+    db.close()
     return path
   }
   const imported = (id: string, title: string, path: string, overrides: Partial<MemoryItem> = {}): MemoryItem =>
@@ -111,15 +112,28 @@ describe('v6 migration: imported non-memories', () => {
     expect((await migrated.list({ scopes: [project] })).map(row => row.id).sort()).toEqual(['own', 'untagged'])
   })
 
-  it('does not run again once the store is stamped v6', async () => {
+  it('leaves the schema version alone, so an older build can still open the store', async () => {
+    // Keying this migration on SCHEMA_VERSION would bump it, and the version is
+    // checked for equality on open — every older evo install (a host hook beside
+    // the DSH profile, say) would then fail with "unsupported evo schema
+    // version" against a store this build had merely tidied.
+    const path = join(mkdtempSync(join(tmpdir(), 'evo-')), 'memory.db')
+    const db = new SqliteMemoryStore(path)
+    stores.push(db)
+    const raw = new DatabaseSync(path)
+    expect(Number((raw.prepare('SELECT version FROM schema_meta LIMIT 1').get() as { version: number }).version)).toBe(5)
+    raw.close()
+  })
+
+  it('does not run again once its marker is recorded', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'evo-ws-'))
     const gone = join(dir, 'AGENTS.md')
     const path = await legacyStore([imported('gone', 'AGENTS.md', gone)])
     new SqliteMemoryStore(path).close()
 
     // A row re-imported after the migration must survive the next open, even
-    // while its file is missing — the eviction is a one-time upgrade, not a
-    // startup sweep that races the filesystem.
+    // while its file is missing — the eviction runs once, it is not a startup
+    // sweep that races the filesystem.
     const reopened = new SqliteMemoryStore(path)
     await reopened.put(imported('fresh', 'AGENTS.md', gone))
     reopened.close()

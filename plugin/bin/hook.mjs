@@ -5446,8 +5446,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   version INTEGER NOT NULL
 );
 INSERT INTO schema_meta(version)
-SELECT 6 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 6 WHERE version < 6;
+SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 5 WHERE version < 5;
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -5465,6 +5465,19 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope_key);
 CREATE INDEX IF NOT EXISTS memories_rank ON memories(usage_count DESC, updated_at DESC);
+
+-- Data migrations, tracked apart from SCHEMA_VERSION.
+--
+-- SCHEMA_VERSION is checked for *equality* when a store opens, so bumping it to
+-- trigger data work makes that build a one-way door: every older build then
+-- refuses the file with "unsupported evo schema version". evo routinely runs
+-- from more than one install at once — a DSH profile and a host hook, often at
+-- different revisions — so a migration that changes no table shape must not
+-- touch the version at all.
+CREATE TABLE IF NOT EXISTS applied_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS memory_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5538,29 +5551,31 @@ var SqliteMemoryStore = class {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new DatabaseSync(path);
 		this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-		const previousVersion = this.readVersion();
 		this.db.exec(SCHEMA_SQL);
-		this.runMigrations(previousVersion);
+		this.runMigrations();
 		const version = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-		if (Number(version?.version) !== 6) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
+		if (Number(version?.version) !== 5) throw new Error(`unsupported evo schema version: ${String(version?.version)}`);
 	}
-	/** Schema version of an existing store, or null for one being created now. */
-	readVersion() {
-		try {
-			const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get();
-			return row === void 0 ? null : Number(row.version);
-		} catch {
-			return null;
-		}
-	}
-	runMigrations(previousVersion) {
+	runMigrations() {
 		try {
 			this.db.exec("ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0");
 		} catch {}
-		if (previousVersion !== null && previousVersion < 6) this.evictImportedNonMemories();
+		this.once("evict-imported-non-memories", () => this.evictImportedNonMemories());
 	}
 	/**
-	* v6, one time: evict workspace-import rows that were never memory.
+	* Run a data migration the first time this store sees it, and never again.
+	*
+	* Keyed on its own marker rather than on SCHEMA_VERSION: a migration that
+	* changes no table shape must stay invisible to older builds, which check the
+	* version for equality and would otherwise refuse the file outright.
+	*/
+	once(id, migrate) {
+		if (this.db.prepare("SELECT 1 FROM applied_migrations WHERE id = ?").get(id) !== void 0) return;
+		migrate();
+		this.db.prepare("INSERT OR IGNORE INTO applied_migrations(id, applied_at) VALUES (?, ?)").run(id, Date.now());
+	}
+	/**
+	* One time: evict workspace-import rows that were never memory.
 	*
 	* Earlier versions copied whole files into `memories`, including two classes
 	* the recall path already reaches without a stored copy — `SKILL.md` bodies
