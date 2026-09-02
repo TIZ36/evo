@@ -1,4 +1,4 @@
-import type { MemoryItem, SkillItem, Turn } from './types.js'
+import type { MemoryItem, MemoryScope, SkillItem, Turn } from './types.js'
 
 /** Catalog entry for a skill: name + trigger + path, not the full body. */
 export type SkillCatalogEntry = {
@@ -7,6 +7,8 @@ export type SkillCatalogEntry = {
   path: string
   /** Uses >= 3 indicates a mature/established skill. */
   promoted?: boolean
+  /** Scope for deduplication: skills are unique by (scope_key, path). */
+  scope?: MemoryScope
 }
 
 /**

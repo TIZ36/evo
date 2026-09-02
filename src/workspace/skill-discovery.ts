@@ -41,7 +41,7 @@ const MAX_FILES = 500
  * Uses source.path when available (from disk-hydrated skills) for correct paths.
  */
 export function skillItemToSummary(skill: SkillItem, basePath = '.paper/agents/skills'): SkillSummary {
-  const sourcePath = skill.source?.path as string | undefined
+  const sourcePath = skill.source?.path
   const isDiskImport = skill.source?.runtime === 'disk-import' || skill.source?.runtime === 'disk-hydrate'
   return {
     name: skill.name,
@@ -60,12 +60,13 @@ export function skillItemToSummary(skill: SkillItem, basePath = '.paper/agents/s
  * Uses the real path so the model can Read the file.
  */
 export function skillItemToCatalogEntry(skill: SkillItem): SkillCatalogEntry {
-  const sourcePath = skill.source?.path as string | undefined
+  const sourcePath = skill.source?.path
   return {
     name: skill.name,
     trigger: extractTriggerSummary(skill.body.trigger),
     path: sourcePath ?? `.paper/agents/skills/${skill.name}/SKILL.md`,
     promoted: skill.promoted,
+    scope: skill.scope,
   }
 }
 
@@ -137,6 +138,7 @@ export function discoverSkillFiles(root: string, scope: MemoryScope): Array<{ su
  * Unlike discoverSkillFiles, this returns SkillCatalogEntry with the real path.
  */
 export function discoverSkillCatalog(root: string): SkillCatalogEntry[] {
+  const projectScope: MemoryScope = { type: 'project', id: root }
   const results: SkillCatalogEntry[] = []
   for (const { base } of SKILL_BASES) {
     const dir = join(root, base)
@@ -152,6 +154,7 @@ export function discoverSkillCatalog(root: string): SkillCatalogEntry[] {
         trigger: extractTriggerSummary(trigger),
         path: rel,
         promoted: false,
+        scope: projectScope,
       })
     }
   }
@@ -163,6 +166,7 @@ export function discoverSkillCatalog(root: string): SkillCatalogEntry[] {
  */
 export function discoverGlobalSkillCatalog(): SkillCatalogEntry[] {
   const home = homedir()
+  const globalScope: MemoryScope = { type: 'global' }
   const results: SkillCatalogEntry[] = []
   for (const { base } of SKILL_BASES) {
     const dir = join(home, base)
@@ -178,8 +182,34 @@ export function discoverGlobalSkillCatalog(): SkillCatalogEntry[] {
         trigger: extractTriggerSummary(trigger),
         path: `~/${rel}`,
         promoted: false,
+        scope: globalScope,
       })
     }
+  }
+  return results
+}
+
+export type CollectDiskSkillsOptions = {
+  cwd?: string | undefined
+  includeGlobal?: boolean | undefined
+}
+
+/**
+ * Collect disk-discovered skills from project and/or global directories.
+ * This is the single source of truth for disk skill catalog assembly,
+ * used by both DSH (EvoCordisService.context) and the hook (recallContext).
+ *
+ * @param cwd - Project directory for project-local skills (optional)
+ * @param includeGlobal - Whether to include global (~/) skill directories (default: true)
+ */
+export function collectDiskSkills(options: CollectDiskSkillsOptions = {}): SkillCatalogEntry[] {
+  const { cwd, includeGlobal = true } = options
+  const results: SkillCatalogEntry[] = []
+  if (cwd) {
+    results.push(...discoverSkillCatalog(cwd))
+  }
+  if (includeGlobal) {
+    results.push(...discoverGlobalSkillCatalog())
   }
   return results
 }

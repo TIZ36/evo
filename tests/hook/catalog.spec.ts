@@ -89,7 +89,7 @@ describe('mergeSkillsWithDisk', () => {
     expect(result[0]!.source).toBe('disk')
   })
 
-  it('deduplicates by path when database skill has matching disk file', () => {
+  it('deduplicates by (scope_key, path) when database skill has matching path', () => {
     const relPath = '.claude/skills/shared-skill/SKILL.md'
     mkdirSync(join(cwd, '.claude/skills/shared-skill'), { recursive: true })
     writeFileSync(join(cwd, relPath), validSkillMd)
@@ -97,15 +97,14 @@ describe('mergeSkillsWithDisk', () => {
     const dbSkills: SkillItem[] = [
       {
         name: 'shared-skill',
-        scope: projectScope,
+        scope: { type: 'project', id: cwd },
         body: makeSkillBody('shared-skill'),
         usageCount: 3,
         createdAt: 1000,
         updatedAt: 1000,
         dormant: false,
         promoted: false,
-        // Note: `path` is used at runtime but not in SkillSource type (pre-existing type gap)
-        source: { runtime: 'disk-hydrate', path: join(cwd, relPath) } as never,
+        source: { runtime: 'disk-hydrate', path: relPath },
       },
     ]
 
@@ -122,6 +121,52 @@ describe('mergeSkillsWithDisk', () => {
     const result = mergeSkillsWithDisk([], cwd)
     expect(result).toHaveLength(1)
     expect(result[0]!.name).toBe('素材分析')
+  })
+
+  it('same-named skills in different directories both appear (dedup by scope+path, not name)', () => {
+    mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+    mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+    mkdirSync(join(cwd, '.paper/agents/skills/build'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build (Claude)\n\n## When to use\n\nClaude build.')
+    writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build (Codex)\n\n## When to use\n\nCodex build.')
+    writeFileSync(join(cwd, '.paper/agents/skills/build/SKILL.md'), '# Build (Paper)\n\n## When to use\n\nPaper build.')
+
+    const result = mergeSkillsWithDisk([], cwd)
+    expect(result).toHaveLength(3)
+    const paths = result.map(r => r.path).sort()
+    expect(paths).toEqual([
+      '.claude/skills/build/SKILL.md',
+      '.codex/skills/build/SKILL.md',
+      '.paper/agents/skills/build/SKILL.md',
+    ])
+    expect(result.every(r => r.name === 'build')).toBe(true)
+  })
+
+  it('same-named db skill and disk skills with different paths all survive', () => {
+    mkdirSync(join(cwd, '.claude/skills/build'), { recursive: true })
+    mkdirSync(join(cwd, '.codex/skills/build'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/skills/build/SKILL.md'), '# Build (Claude)\n\n## When to use\n\nClaude build.')
+    writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build (Codex)\n\n## When to use\n\nCodex build.')
+
+    const dbSkills: SkillItem[] = [
+      {
+        name: 'build',
+        scope: { type: 'project', id: cwd },
+        body: makeSkillBody('build'),
+        usageCount: 5,
+        createdAt: 1000,
+        updatedAt: 1000,
+        dormant: false,
+        promoted: true,
+      },
+    ]
+
+    const result = mergeSkillsWithDisk(dbSkills, cwd)
+    expect(result.length).toBe(3)
+    expect(result.filter(r => r.name === 'build')).toHaveLength(3)
+    const sources = result.map(r => r.source).sort()
+    expect(sources).toContain('evo')
+    expect(sources).toContain('disk')
   })
 })
 

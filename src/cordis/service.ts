@@ -8,7 +8,7 @@ import { SkillHydrator, type SkillHydrateResult } from '../workspace/skill-hydra
 import { buildScopeTree, type ScopeTreeNode } from '../core/scope-tree.js'
 import { resolveDataPaths } from '../config/paths.js'
 import type { Config } from './config.js'
-import { discoverGlobalSkillCatalog, discoverGlobalSkillFiles, discoverSkillCatalog, discoverSkillFiles, memoryItemToSummary, skillItemToSummary, type SkillSummary } from '../workspace/skill-discovery.js'
+import { collectDiskSkills, discoverGlobalSkillFiles, discoverSkillFiles, memoryItemToSummary, skillItemToSummary, type SkillSummary } from '../workspace/skill-discovery.js'
 
 export type { SkillSummary } from '../workspace/skill-discovery.js'
 
@@ -53,14 +53,8 @@ export class EvoCordisService extends Service {
    * Pass `cwd` to include project-local skill directories.
    * Pass `includeGlobal: false` to exclude global (~/) skill directories.
    */
-  context(query: MemoryQuery & { maxChars?: number; cwd?: string; includeGlobal?: boolean } = {}) {
-    const additionalSkills = []
-    if (query.cwd) {
-      additionalSkills.push(...discoverSkillCatalog(query.cwd))
-    }
-    if (query.includeGlobal !== false) {
-      additionalSkills.push(...discoverGlobalSkillCatalog())
-    }
+  context(query: MemoryQuery & { maxChars?: number; cwd?: string | undefined; includeGlobal?: boolean | undefined } = {}) {
+    const additionalSkills = collectDiskSkills({ cwd: query.cwd, includeGlobal: query.includeGlobal })
     return this.core.context({ ...query, additionalSkills })
   }
 

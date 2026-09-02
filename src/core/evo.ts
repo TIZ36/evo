@@ -105,35 +105,41 @@ export class EvoService {
    * Memories are rendered inline. Skills are listed as catalog entries (name +
    * trigger + path) — the model can Read the SKILL.md if needed.
    *
+   * Deduplication uses (scope_key, path) so same-named skills in different
+   * directories (e.g. .claude/skills/build and .codex/skills/build) both survive.
+   *
    * @param additionalSkills - Extra skill catalog entries to include (e.g. disk-discovered skills)
    */
   async context(query: MemoryQuery & { maxChars?: number; skillRoot?: string; additionalSkills?: SkillCatalogEntry[] } = {}) {
     const memories = await this.recall(query)
     const skillEntries: SkillCatalogEntry[] = []
-    const seenPaths = new Set<string>()
+    const seenKeys = new Set<string>()
 
     if (this.skillStore && query.scopes?.length) {
       const skillQuery: SkillQuery = { scopes: query.scopes }
       if (query.limit !== undefined) skillQuery.limit = query.limit
       const skills = await this.skillStore.listSkills(skillQuery)
       for (const skill of skills) {
-        const sourcePath = skill.source?.path as string | undefined
+        const sourcePath = skill.source?.path
         const path = sourcePath ?? (query.skillRoot ? `${query.skillRoot}/${skill.name}/SKILL.md` : `.paper/agents/skills/${skill.name}/SKILL.md`)
-        seenPaths.add(path.toLowerCase())
+        const dedupKey = `${scopeKey(skill.scope)}:${path.toLowerCase()}`
+        seenKeys.add(dedupKey)
         skillEntries.push({
           name: skill.name,
           trigger: extractTriggerSummary(skill.body.trigger),
           path,
           promoted: skill.promoted,
+          scope: skill.scope,
         })
       }
     }
 
     if (query.additionalSkills) {
       for (const skill of query.additionalSkills) {
-        const pathKey = skill.path.toLowerCase()
-        if (seenPaths.has(pathKey)) continue
-        seenPaths.add(pathKey)
+        const skillScope = skill.scope ?? { type: 'global' as const }
+        const dedupKey = `${scopeKey(skillScope)}:${skill.path.toLowerCase()}`
+        if (seenKeys.has(dedupKey)) continue
+        seenKeys.add(dedupKey)
         skillEntries.push(skill)
       }
     }
