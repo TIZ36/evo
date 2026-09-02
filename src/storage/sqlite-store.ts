@@ -1,9 +1,9 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ConsolidationStore, MemoryEventSink, MemoryStore, ReplayStore, SkillStore } from '../core/contracts.js'
 import type { MemoryEvent, MemoryEventRecord } from '../core/contracts.js'
-import { memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, SKILL_PROMOTION_THRESHOLD, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
+import { IMPORT_RUNTIME, IMPORT_SKIP_DIR_NAMES, memoryItemSchema, scopeKey, skillBodySchema, skillItemSchema, SKILL_FILE, SKILL_PROMOTION_THRESHOLD, type ConsolidationState, type MemoryItem, type MemoryKind, type MemoryQuery, type MemoryScope, type ReplayEntry, type SkillItem, type SkillLesson, type SkillQuery } from '../core/types.js'
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js'
 
 type Row = Record<string, unknown>
@@ -28,6 +28,57 @@ export class SqliteMemoryStore implements MemoryStore, SkillStore, ReplayStore, 
       this.db.exec('ALTER TABLE skills ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0')
     } catch {
       // Column already exists - migration already applied
+    }
+    this.once('evict-imported-non-memories', () => this.evictImportedNonMemories())
+  }
+
+  /**
+   * Run a data migration the first time this store sees it, and never again.
+   *
+   * Keyed on its own marker rather than on SCHEMA_VERSION: a migration that
+   * changes no table shape must stay invisible to older builds, which check the
+   * version for equality and would otherwise refuse the file outright.
+   */
+  private once(id: string, migrate: () => void): void {
+    const seen = this.db.prepare('SELECT 1 FROM applied_migrations WHERE id = ?').get(id)
+    if (seen !== undefined) return
+    migrate()
+    this.db.prepare('INSERT OR IGNORE INTO applied_migrations(id, applied_at) VALUES (?, ?)').run(id, Date.now())
+  }
+
+  /**
+   * One time: evict workspace-import rows that were never memory.
+   *
+   * Earlier versions copied whole files into `memories`, including two classes
+   * the recall path already reaches without a stored copy — `SKILL.md` bodies
+   * (the disk-skill catalog lists each as a single line, while a memory row
+   * renders its whole body inline) and documents under a tool's cache
+   * directory. A row whose file has since disappeared goes too: it is a
+   * projection of nothing. The importer no longer creates any of the three.
+   *
+   * Keyed on `source.runtime`, never on the import tag — memories evo
+   * distilled *about* the importer carry that tag and must survive.
+   */
+  private evictImportedNonMemories(): void {
+    const rows = this.db
+      .prepare("SELECT id, title, json_extract(source_json, '$.path') AS path FROM memories WHERE json_extract(source_json, '$.runtime') = ?")
+      .all(IMPORT_RUNTIME) as Row[]
+    const doomed = rows.filter(row => {
+      const title = String(row.title)
+      if (title === SKILL_FILE || title.endsWith(`/${SKILL_FILE}`)) return true
+      if (IMPORT_SKIP_DIR_NAMES.some(name => title.includes(`/${name}/`) || title.startsWith(`${name}/`))) return true
+      const path = row.path == null ? null : String(row.path)
+      return path === null || !existsSync(path)
+    })
+    if (!doomed.length) return
+    const remove = this.db.prepare('DELETE FROM memories WHERE id = ?')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of doomed) remove.run(String(row.id))
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 

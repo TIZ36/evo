@@ -25,6 +25,19 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope_key);
 CREATE INDEX IF NOT EXISTS memories_rank ON memories(usage_count DESC, updated_at DESC);
 
+-- Data migrations, tracked apart from SCHEMA_VERSION.
+--
+-- SCHEMA_VERSION is checked for *equality* when a store opens, so bumping it to
+-- trigger data work makes that build a one-way door: every older build then
+-- refuses the file with "unsupported evo schema version". evo routinely runs
+-- from more than one install at once — a DSH profile and a host hook, often at
+-- different revisions — so a migration that changes no table shape must not
+-- touch the version at all.
+CREATE TABLE IF NOT EXISTS applied_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS memory_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,

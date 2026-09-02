@@ -19,6 +19,21 @@ export const memoryScopeSchema: z.ZodType<MemoryScope> = z.lazy(() => z.object({
   }
 }))
 
+/**
+ * Workspace-import vocabulary, shared by the importer and by the storage
+ * migration that evicts what earlier versions imported. Both must agree on
+ * what an imported row is, or the migration deletes the wrong rows.
+ */
+
+/** `source.runtime` of every row the workspace importer owns — the only safe delete key. */
+export const IMPORT_RUNTIME = 'workspace-import'
+
+/** A skill package's entry file. Owned by the disk-skill catalog, never imported as memory. */
+export const SKILL_FILE = 'SKILL.md'
+
+/** Directory names the importer never descends into: tool caches, not user memory. */
+export const IMPORT_SKIP_DIR_NAMES = ['.tmp', 'node_modules', '.git'] as const
+
 export const memoryKindSchema = z.enum(['fact', 'preference', 'constraint', 'procedure', 'skill'])
 export type MemoryKind = z.infer<typeof memoryKindSchema>
 
