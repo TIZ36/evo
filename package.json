@@ -52,6 +52,8 @@
     "install_evo_dsps.sh",
     "install_evo_claude.sh",
     "install_evo_codex.sh",
+    "scripts/install-utils.mjs",
+    "scripts/install-utils.d.mts",
     "README.md",
     "LICENSE"
   ],

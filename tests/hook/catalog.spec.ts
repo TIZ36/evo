@@ -73,7 +73,7 @@ describe('mergeSkillsWithDisk', () => {
       },
     ]
 
-    const result = mergeSkillsWithDisk(dbSkills, cwd)
+    const result = mergeSkillsWithDisk(dbSkills, cwd, false)
     expect(result).toHaveLength(1)
     expect(result[0]!.name).toBe('db-skill')
     expect(result[0]!.source).toBe('evo')
@@ -83,7 +83,7 @@ describe('mergeSkillsWithDisk', () => {
     mkdirSync(join(cwd, '.claude/skills/disk-only'), { recursive: true })
     writeFileSync(join(cwd, '.claude/skills/disk-only/SKILL.md'), validSkillMd)
 
-    const result = mergeSkillsWithDisk([], cwd)
+    const result = mergeSkillsWithDisk([], cwd, false)
     expect(result).toHaveLength(1)
     expect(result[0]!.name).toBe('disk-only')
     expect(result[0]!.source).toBe('disk')
@@ -108,7 +108,7 @@ describe('mergeSkillsWithDisk', () => {
       },
     ]
 
-    const result = mergeSkillsWithDisk(dbSkills, cwd)
+    const result = mergeSkillsWithDisk(dbSkills, cwd, false)
     expect(result).toHaveLength(1)
     expect(result[0]!.name).toBe('shared-skill')
     expect(result[0]!.usageCount).toBe(3)
@@ -118,7 +118,7 @@ describe('mergeSkillsWithDisk', () => {
     mkdirSync(join(cwd, '.claude/skills/素材分析'), { recursive: true })
     writeFileSync(join(cwd, '.claude/skills/素材分析/SKILL.md'), '# 素材分析\n\n分析广告素材')
 
-    const result = mergeSkillsWithDisk([], cwd)
+    const result = mergeSkillsWithDisk([], cwd, false)
     expect(result).toHaveLength(1)
     expect(result[0]!.name).toBe('素材分析')
   })
@@ -131,7 +131,7 @@ describe('mergeSkillsWithDisk', () => {
     writeFileSync(join(cwd, '.codex/skills/build/SKILL.md'), '# Build (Codex)\n\n## When to use\n\nCodex build.')
     writeFileSync(join(cwd, '.paper/agents/skills/build/SKILL.md'), '# Build (Paper)\n\n## When to use\n\nPaper build.')
 
-    const result = mergeSkillsWithDisk([], cwd)
+    const result = mergeSkillsWithDisk([], cwd, false)
     expect(result).toHaveLength(3)
     const paths = result.map(r => r.path).sort()
     expect(paths).toEqual([
@@ -161,7 +161,7 @@ describe('mergeSkillsWithDisk', () => {
       },
     ]
 
-    const result = mergeSkillsWithDisk(dbSkills, cwd)
+    const result = mergeSkillsWithDisk(dbSkills, cwd, false)
     expect(result.length).toBe(3)
     expect(result.filter(r => r.name === 'build')).toHaveLength(3)
     const sources = result.map(r => r.source).sort()

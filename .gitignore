@@ -50,4 +50,5 @@ pnpm-debug.log*
 yarn-error.log*
 
 # local agent config (machine-specific)
+.mcp.json
 .claude/settings.local.json

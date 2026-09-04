@@ -11,7 +11,15 @@ import {
   findCodexPlugin,
   findProjectClaudeHooks,
   findProjectCodexHooks,
+  shellQuote,
 } from '../../scripts/install-utils.mjs'
+
+describe('shellQuote', () => {
+  it('quotes spaces and apostrophes for hook command paths', () => {
+    expect(shellQuote("/tmp/evo user's checkout/dist/hook/cli.mjs"))
+      .toBe("'/tmp/evo user'\\''s checkout/dist/hook/cli.mjs'")
+  })
+})
 
 describe('isEvoHook', () => {
   describe('script-style hooks', () => {
@@ -282,17 +290,37 @@ describe('plugin detection', () => {
   })
 
   describe('findCodexPlugin', () => {
-    it('finds evo plugin in plugins directory', () => {
-      const pluginDir = join(tempDir, 'plugins', 'evo-def456', '.codex-plugin')
-      mkdirSync(pluginDir, { recursive: true })
-      writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'evo', version: '0.3.0' }))
-      
-      const result = findCodexPlugin(tempDir)
-      expect(result).toBe(join(tempDir, 'plugins', 'evo-def456'))
+    it('finds evo in authoritative plugin-list output', () => {
+      const result = findCodexPlugin({ installed: [{
+        pluginId: 'evo@evo',
+        name: 'evo',
+        marketplaceName: 'evo',
+        version: '0.3.0',
+        installed: true,
+        enabled: true,
+      }] })
+      expect(result).toEqual({
+        selector: 'evo@evo',
+        enabled: true,
+        marketplaceName: 'evo',
+        version: '0.3.0',
+      })
     })
 
-    it('returns null when no evo plugin exists', () => {
-      expect(findCodexPlugin(tempDir)).toBeNull()
+    it('ignores available and stale cached plugins that are not installed', () => {
+      expect(findCodexPlugin({
+        installed: [],
+        available: [{ pluginId: 'evo@evo', name: 'evo', installed: false, enabled: false }],
+      })).toBeNull()
+    })
+
+    it('uses the full marketplace selector for disabled installs too', () => {
+      expect(findCodexPlugin({ installed: [{
+        name: 'evo',
+        marketplaceName: 'evo',
+        installed: true,
+        enabled: false,
+      }] })).toMatchObject({ selector: 'evo@evo', enabled: false })
     })
   })
 })

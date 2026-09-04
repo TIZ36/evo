@@ -50,7 +50,8 @@ describe('recallContext', () => {
 
   it('is empty when nothing is remembered', async () => {
     const { store, evo } = service()
-    expect(await recallContext({ cwd: '/nowhere' }, evo, config)).toBe('')
+    const noGlobalConfig = hookConfig({ EVO_HOOK_GLOBAL_SKILLS: '0' })
+    expect(await recallContext({ cwd: '/nowhere' }, evo, noGlobalConfig)).toBe('')
     store.close?.()
   })
 })
@@ -223,7 +224,7 @@ describe('reflectTurn', () => {
 describe('buildCatalog', () => {
   it('returns empty catalog when nothing is stored', async () => {
     const { store, evo } = service()
-    const result = await buildCatalog(evo, store)
+    const result = await buildCatalog(evo, store, undefined, false)
     expect(result.skills).toHaveLength(0)
     expect(result.memories).toHaveLength(0)
     store.close?.()
@@ -235,7 +236,7 @@ describe('buildCatalog', () => {
     await evo.remember({ scope: { type: 'global' }, kind: 'fact', title: 'Global fact', content: 'Global content' })
     await evo.remember({ scope: { type: 'project', id: realpathSync(cwd) }, kind: 'preference', title: 'Project pref', content: 'Project content' })
 
-    const result = await buildCatalog(evo, store, cwd)
+    const result = await buildCatalog(evo, store, cwd, false)
     expect(result.memories).toHaveLength(2)
     const titles = result.memories.map(m => m.name).sort()
     expect(titles).toEqual(['Global fact', 'Project pref'])
@@ -277,7 +278,7 @@ When testing disk discovery.
 Check it worked.
 `)
 
-    const result = await buildCatalog(evo, store, cwd)
+    const result = await buildCatalog(evo, store, cwd, false)
     expect(result.skills.length).toBeGreaterThanOrEqual(2)
     const names = result.skills.map(s => s.name)
     expect(names).toContain('db-skill')
@@ -292,7 +293,7 @@ Check it worked.
     mkdirSync(join(cwd, '.claude/skills/素材分析'), { recursive: true })
     writeFileSync(join(cwd, '.claude/skills/素材分析/SKILL.md'), '# 素材分析\n\n分析广告素材效果')
 
-    const result = await buildCatalog(evo, store, cwd)
+    const result = await buildCatalog(evo, store, cwd, false)
     const names = result.skills.map(s => s.name)
     expect(names).toContain('素材分析')
     store.close?.()

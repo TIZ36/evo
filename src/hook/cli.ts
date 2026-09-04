@@ -185,12 +185,17 @@ export function openService(): { service: EvoService; store: SqliteMemoryStore }
  * Build the full catalog of skills and memories for the given scopes.
  * Merges database entries with disk-discovered SKILL.md files.
  */
-export async function buildCatalog(service: EvoService, store: SqliteMemoryStore, cwd?: string): Promise<CatalogResult> {
+export async function buildCatalog(
+  service: EvoService,
+  store: SqliteMemoryStore,
+  cwd?: string,
+  includeGlobalSkills = true
+): Promise<CatalogResult> {
   const scopes = hookScopes(cwd)
   const projectRoot = cwd ? canonicalPath(cwd) : undefined
 
   const dbSkills = await service.listSkills({ scopes, includeDormant: true, limit: 1000 })
-  const skillSummaries = mergeSkillsWithDisk(dbSkills, projectRoot)
+  const skillSummaries = mergeSkillsWithDisk(dbSkills, projectRoot, includeGlobalSkills)
   const skills = skillsToCatalogEntries(skillSummaries)
 
   const memories = await service.recall({ scopes, limit: 1000 })

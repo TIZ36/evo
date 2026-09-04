@@ -222,7 +222,7 @@ describe('evo HTTP API', () => {
         { sessionId: 's', turn: 1, scope: { type: 'project', id: '/test' }, user: 'create skill', assistant: 'done' },
       ])
 
-      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=%2Ftest`)
+      const response = await call(svc, 'GET', `${MEMORY_API_PATH}/skills?scopeType=project&scopeId=%2Ftest&includeGlobal=false`)
       expect(response.status).toBe(200)
       const { skills } = response.json as { skills: Array<{
         name: string

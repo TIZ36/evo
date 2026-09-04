@@ -36,7 +36,8 @@ export type CatalogResult = {
  */
 export function mergeSkillsWithDisk(
   dbSkills: SkillItem[],
-  projectRoot?: string
+  projectRoot?: string,
+  includeGlobal = true
 ): SkillSummary[] {
   const summaries: SkillSummary[] = []
   const seenKeys = new Set<string>()
@@ -48,13 +49,15 @@ export function mergeSkillsWithDisk(
     summaries.push(summary)
   }
 
-  const globalScope: MemoryScope = { type: 'global' }
-  const globalDisk = discoverGlobalSkillFiles()
-  for (const { summary } of globalDisk) {
-    const dedupKey = `${scopeKey(globalScope)}:${summary.path.toLowerCase()}`
-    if (seenKeys.has(dedupKey)) continue
-    seenKeys.add(dedupKey)
-    summaries.push(summary)
+  if (includeGlobal) {
+    const globalScope: MemoryScope = { type: 'global' }
+    const globalDisk = discoverGlobalSkillFiles()
+    for (const { summary } of globalDisk) {
+      const dedupKey = `${scopeKey(globalScope)}:${summary.path.toLowerCase()}`
+      if (seenKeys.has(dedupKey)) continue
+      seenKeys.add(dedupKey)
+      summaries.push(summary)
+    }
   }
 
   if (projectRoot) {

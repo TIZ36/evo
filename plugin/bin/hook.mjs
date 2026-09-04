@@ -6921,7 +6921,7 @@ function isRecord(value) {
 * directories (e.g. .claude/skills/build and .codex/skills/build) both survive.
 * This matches the recall dedup logic in EvoService.context and EvoCordisService.skills.
 */
-function mergeSkillsWithDisk(dbSkills, projectRoot) {
+function mergeSkillsWithDisk(dbSkills, projectRoot, includeGlobal = true) {
 	const summaries = [];
 	const seenKeys = /* @__PURE__ */ new Set();
 	for (const skill of dbSkills) {
@@ -6930,13 +6930,15 @@ function mergeSkillsWithDisk(dbSkills, projectRoot) {
 		seenKeys.add(dedupKey);
 		summaries.push(summary);
 	}
-	const globalScope = { type: "global" };
-	const globalDisk = discoverGlobalSkillFiles();
-	for (const { summary } of globalDisk) {
-		const dedupKey = `${scopeKey(globalScope)}:${summary.path.toLowerCase()}`;
-		if (seenKeys.has(dedupKey)) continue;
-		seenKeys.add(dedupKey);
-		summaries.push(summary);
+	if (includeGlobal) {
+		const globalScope = { type: "global" };
+		const globalDisk = discoverGlobalSkillFiles();
+		for (const { summary } of globalDisk) {
+			const dedupKey = `${scopeKey(globalScope)}:${summary.path.toLowerCase()}`;
+			if (seenKeys.has(dedupKey)) continue;
+			seenKeys.add(dedupKey);
+			summaries.push(summary);
+		}
 	}
 	if (projectRoot) {
 		const projectScope = {
@@ -7180,7 +7182,7 @@ function openService() {
 * Build the full catalog of skills and memories for the given scopes.
 * Merges database entries with disk-discovered SKILL.md files.
 */
-async function buildCatalog(service, store, cwd) {
+async function buildCatalog(service, store, cwd, includeGlobalSkills = true) {
 	const scopes = hookScopes(cwd);
 	const projectRoot = cwd ? canonicalPath(cwd) : void 0;
 	return {
@@ -7188,7 +7190,7 @@ async function buildCatalog(service, store, cwd) {
 			scopes,
 			includeDormant: true,
 			limit: 1e3
-		}), projectRoot)),
+		}), projectRoot, includeGlobalSkills)),
 		memories: memoriesToCatalogEntries(await service.recall({
 			scopes,
 			limit: 1e3

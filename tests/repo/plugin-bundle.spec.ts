@@ -27,12 +27,17 @@ describe('plugin bundle', () => {
     expect(imports.filter(name => !name.startsWith('node:'))).toEqual([])
   })
 
-  it('is declared by both hosts\u2019 manifests and by one shared hooks file', () => {
-    for (const path of ['plugin/.claude-plugin/plugin.json', 'plugin/.codex-plugin/plugin.json']) {
-      const manifest = JSON.parse(readFileSync(path, 'utf8'))
-      expect(manifest.name).toBe('evo')
-      expect(manifest.hooks).toBe('./hooks/hooks.json')
-    }
+  it('uses each host\u2019s standard hook discovery and one shared hooks file', () => {
+    const claudeManifest = JSON.parse(readFileSync('plugin/.claude-plugin/plugin.json', 'utf8'))
+    expect(claudeManifest.name).toBe('evo')
+    expect(claudeManifest.hooks).toBe('./hooks/hooks.json')
+
+    const codexManifest = JSON.parse(readFileSync('plugin/.codex-plugin/plugin.json', 'utf8'))
+    expect(codexManifest.name).toBe('evo')
+    expect(codexManifest).not.toHaveProperty('hooks')
+    expect(codexManifest.author.name).toBeTruthy()
+    expect(codexManifest.interface.defaultPrompt.length).toBeGreaterThan(0)
+
     // Codex exports PLUGIN_ROOT; Claude Code exports only CLAUDE_PLUGIN_ROOT.
     const hooks = JSON.parse(readFileSync('plugin/hooks/hooks.json', 'utf8'))
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
@@ -48,5 +53,6 @@ describe('plugin bundle', () => {
     const codex = JSON.parse(readFileSync('.agents/plugins/marketplace.json', 'utf8'))
     expect(codex.plugins.map((plugin: { name: string }) => plugin.name)).toContain('evo')
     expect(codex.plugins[0].source).toEqual({ source: 'local', path: './plugin' })
+    expect(codex.plugins[0].policy).toEqual({ installation: 'AVAILABLE', authentication: 'ON_INSTALL' })
   })
 })

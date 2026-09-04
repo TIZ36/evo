@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 SETTINGS="$CODEX_DIR/hooks.json"
 HOOK_ENTRY="$SCRIPT_DIR/dist/hook/cli.mjs"
-HOOK_COMMAND="node --no-warnings $HOOK_ENTRY"
+INSTALL_UTILS="$SCRIPT_DIR/scripts/install-utils.mjs"
 MODE="install"
 
 for argument in "$@"; do
@@ -29,12 +29,51 @@ if ! command -v node >/dev/null 2>&1; then
   exit 127
 fi
 
-if [[ ! -f "$SCRIPT_DIR/package.json" ]]; then
+if [[ ! -f "$SCRIPT_DIR/package.json" || ! -f "$INSTALL_UTILS" ]]; then
   echo "evo: run this script from an intact evo checkout" >&2
   exit 1
 fi
 
+INSTALLED_EVO_PLUGIN=""
+if command -v codex >/dev/null 2>&1; then
+  if PLUGIN_LIST_JSON="$(codex plugin list --json 2>/dev/null)"; then
+    INSTALLED_EVO_PLUGIN="$(
+      printf '%s' "$PLUGIN_LIST_JSON" | node --input-type=module -e '
+        import { pathToFileURL } from "node:url"
+        const { findCodexPlugin } = await import(pathToFileURL(process.argv[1]).href)
+        let input = ""
+        for await (const chunk of process.stdin) input += chunk
+        const plugin = findCodexPlugin(JSON.parse(input))
+        if (plugin) process.stdout.write(plugin.selector)
+      ' "$INSTALL_UTILS"
+    )"
+  elif [[ "$MODE" == "install" ]]; then
+    echo "evo: could not inspect installed Codex plugins" >&2
+    echo "     Run 'codex plugin list --json' to diagnose the plugin configuration." >&2
+    exit 1
+  fi
+elif [[ "$MODE" == "install" ]]; then
+  echo "evo: required command not found: codex" >&2
+  exit 127
+fi
+
+if [[ "$MODE" == "install" && -n "$INSTALLED_EVO_PLUGIN" ]]; then
+  echo "evo: marketplace plugin is already installed as $INSTALLED_EVO_PLUGIN" >&2
+  echo "     Using both plugin and script would run evo twice per turn." >&2
+  echo >&2
+  echo "     To use this script instead, first remove the plugin:" >&2
+  echo "       codex plugin remove $INSTALLED_EVO_PLUGIN" >&2
+  echo "     Then run this script again." >&2
+  echo >&2
+  echo "     Or keep the plugin and skip this script." >&2
+  exit 1
+fi
+
 if [[ "$MODE" == "install" ]]; then
+  if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)'; then
+    echo "evo: Node.js 22.19.0 or newer is required (found $(node --version))" >&2
+    exit 1
+  fi
   if ! command -v pnpm >/dev/null 2>&1; then
     echo "evo: required command not found: pnpm" >&2
     exit 127
@@ -49,11 +88,12 @@ if [[ "$MODE" == "install" ]]; then
 fi
 
 mkdir -p "$CODEX_DIR"
-node --input-type=module - "$SETTINGS" "$HOOK_ENTRY" "$MODE" "$CODEX_DIR" <<'NODE'
-import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+node --input-type=module - "$SETTINGS" "$HOOK_ENTRY" "$MODE" "$INSTALL_UTILS" <<'NODE'
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 
-const [, , settingsPath, hookEntry, mode, codexDir] = process.argv
+const [, , settingsPath, hookEntry, mode, installUtils] = process.argv
+const { shellQuote } = await import(pathToFileURL(installUtils).href)
 
 /** Hook events evo takes part in. Extend here; re-running the script applies it. */
 const EVENTS = {
@@ -61,7 +101,7 @@ const EVENTS = {
   UserPromptSubmit: { timeout: 20 },
   Stop: { timeout: 20 },
 }
-const command = `node --no-warnings ${hookEntry}`
+const command = `node --no-warnings ${shellQuote(hookEntry)}`
 
 /**
  * Matches any evo hook command, regardless of install method:
@@ -87,24 +127,6 @@ function isEvoHook(hook) {
   return false
 }
 
-/** Checks if the evo plugin is installed via Codex plugin system. */
-function findCodexPlugin() {
-  const pluginsDir = join(codexDir, 'plugins')
-  if (!existsSync(pluginsDir)) return null
-  try {
-    for (const entry of readdirSync(pluginsDir)) {
-      const pluginJson = join(pluginsDir, entry, '.codex-plugin', 'plugin.json')
-      if (existsSync(pluginJson)) {
-        try {
-          const manifest = JSON.parse(readFileSync(pluginJson, 'utf8'))
-          if (manifest.name === 'evo') return join(pluginsDir, entry)
-        } catch { /* skip malformed manifests */ }
-      }
-    }
-  } catch { /* plugins dir not readable */ }
-  return null
-}
-
 /** Counts evo hooks in a settings object. */
 function countEvoHooks(settings) {
   const hooks = settings?.hooks
@@ -123,20 +145,6 @@ function countEvoHooks(settings) {
     }
   }
   return { count, events }
-}
-
-// ── Plugin conflict detection ─────────────────────────────────────────────
-const pluginPath = findCodexPlugin()
-if (pluginPath && mode === 'install') {
-  console.error(`evo: marketplace plugin is already installed at ${pluginPath}`)
-  console.error(`     Using both plugin and script would run evo twice per turn.`)
-  console.error(``)
-  console.error(`     To use this script instead, first remove the plugin:`)
-  console.error(`       codex plugin remove evo`)
-  console.error(`     Then run this script again.`)
-  console.error(``)
-  console.error(`     Or keep the plugin and skip this script.`)
-  process.exit(1)
 }
 
 // ── Load and back up existing settings ────────────────────────────────────
@@ -186,15 +194,14 @@ if (mode === 'install') {
   for (const event of Object.keys(EVENTS)) console.log(`  ${event}`)
 } else {
   console.log(`evo: removed ${removed} hook entr${removed === 1 ? 'y' : 'ies'}`)
-  // Also check if plugin is still installed after uninstall
-  if (pluginPath) {
-    console.log(`evo: note: marketplace plugin still installed at ${pluginPath}`)
-    console.log(`     To fully remove evo, also run: codex plugin remove evo`)
-  }
 }
 NODE
 
 if [[ "$MODE" == "uninstall" ]]; then
+  if [[ -n "$INSTALLED_EVO_PLUGIN" ]]; then
+    echo "evo: note: marketplace plugin is still installed as $INSTALLED_EVO_PLUGIN"
+    echo "     To fully remove evo, also run: codex plugin remove $INSTALLED_EVO_PLUGIN"
+  fi
   echo "evo: uninstalled from $SETTINGS"
   exit 0
 fi
@@ -262,7 +269,7 @@ DATA_DIR=$(node --no-warnings --input-type=module -e \
 cat <<EOF
 evo: installed successfully
   hooks:   $SETTINGS
-  hook:    $HOOK_COMMAND
+  hook:    node --no-warnings '$HOOK_ENTRY'
   storage: $DATA_DIR
   probe:   $(if [[ -n "$PROBE" ]]; then echo "recalled memory for this checkout"; else echo "no memory yet for this checkout (expected on a fresh store)"; fi)
 

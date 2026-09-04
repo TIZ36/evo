@@ -42,14 +42,14 @@ The installer detects and refuses to run when conflicts would cause double execu
 
 ### Plugin + Script Conflict
 
-If the marketplace plugin is already installed, the script refuses with:
+If `codex plugin list --json` reports that the marketplace plugin is installed, the script refuses with:
 
 ```
-evo: marketplace plugin is already installed at ~/.codex/plugins/evo-abc123
+evo: marketplace plugin is already installed as evo@evo
      Using both plugin and script would run evo twice per turn.
 
      To use this script instead, first remove the plugin:
-       codex plugin remove evo
+       codex plugin remove evo@evo
      Then run this script again.
 ```
 
@@ -67,7 +67,7 @@ evo: WARNING: project-level evo hooks found in .codex/hooks.json
 
 To fully remove evo:
 
-- **Plugin install:** `codex plugin remove evo`
+- **Plugin install:** `codex plugin remove evo@evo`
 - **Script install:** `./install_evo_codex.sh --uninstall`
 
 If you installed both (accidentally), run both uninstall commands.
@@ -135,8 +135,13 @@ Notices are `UserPromptSubmit`-only: a `SessionStart` defers any pending receipt
 
 Marketplace users receive hook changes after the rebuilt `plugin/bin/hook.mjs` is committed to the branch they installed from. To update:
 
-1. Update or reinstall the plugin via the marketplace
-2. The new hook bundle takes effect on the next session
+```bash
+codex plugin marketplace upgrade evo
+codex plugin remove evo@evo
+codex plugin add evo@evo
+```
+
+Start a new Codex session after installing or updating so the new hooks are loaded.
 
 Installer-script users already run `pnpm build` inside `install_evo_codex.sh`, so their `dist/hook/cli.mjs` is fresh on each script run — no manual update needed.
 

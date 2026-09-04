@@ -11,6 +11,11 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+/** Quote one argument for a POSIX-compatible shell command string. */
+export function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
+}
+
 /**
  * Matches any evo hook command, regardless of install method:
  * - hook/cli.mjs (script-style, dist or src)
@@ -59,24 +64,29 @@ export function findClaudePlugin(claudeDir) {
 }
 
 /**
- * Checks if the evo plugin is installed via Codex plugin system.
- * Returns the plugin path if found, null otherwise.
+ * Checks authoritative `codex plugin list --json` output for an installed evo
+ * plugin. Cache directories are deliberately ignored because Codex retains
+ * stale cached versions after a plugin is removed.
+ * Returns the installed plugin metadata and its canonical selector.
  */
-export function findCodexPlugin(codexDir) {
-  const pluginsDir = join(codexDir, 'plugins')
-  if (!existsSync(pluginsDir)) return null
-  try {
-    for (const entry of readdirSync(pluginsDir)) {
-      const pluginJson = join(pluginsDir, entry, '.codex-plugin', 'plugin.json')
-      if (existsSync(pluginJson)) {
-        try {
-          const manifest = JSON.parse(readFileSync(pluginJson, 'utf8'))
-          if (manifest.name === 'evo') return join(pluginsDir, entry)
-        } catch { /* skip malformed manifests */ }
-      }
-    }
-  } catch { /* plugins dir not readable */ }
-  return null
+export function findCodexPlugin(pluginList) {
+  const installed = Array.isArray(pluginList?.installed) ? pluginList.installed : []
+  const plugin = installed.find(candidate => candidate?.name === 'evo' && candidate?.installed === true)
+  if (!plugin) return null
+
+  const marketplaceName = typeof plugin.marketplaceName === 'string' ? plugin.marketplaceName : undefined
+  const selector = typeof plugin.pluginId === 'string'
+    ? plugin.pluginId
+    : marketplaceName
+      ? `evo@${marketplaceName}`
+      : 'evo'
+
+  return {
+    selector,
+    enabled: plugin.enabled === true,
+    marketplaceName,
+    version: typeof plugin.version === 'string' ? plugin.version : undefined,
+  }
 }
 
 /**

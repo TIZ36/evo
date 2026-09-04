@@ -1,17 +1,20 @@
 {
   "name": "evo",
-  "version": "0.3.0",
+  "version": "0.3.0+codex.20260904095749",
   "description": "Evolving memory for agents: recall before the model thinks, reflect after it answers.",
   "homepage": "https://github.com/TIZ36/evo",
   "repository": "https://github.com/TIZ36/evo",
   "license": "MIT",
+  "author": {
+    "name": "Paper team",
+    "url": "https://github.com/TIZ36"
+  },
   "keywords": [
     "memory",
     "recall",
     "hooks",
     "skills"
   ],
-  "hooks": "./hooks/hooks.json",
   "skills": "./skills/",
   "interface": {
     "displayName": "evo",
@@ -19,6 +22,15 @@
     "longDescription": "Recalls durable global and project memory into every session, and distils each finished turn back into it. Storage is one local SQLite file; reflection runs through the Codex CLI you already have, so evo needs no API key of its own. Use $evo-browse to list all remembered skills and memories.",
     "developerName": "Paper team",
     "category": "Productivity",
-    "capabilities": ["Read", "Write", "Automation"]
+    "capabilities": [
+      "Read",
+      "Write",
+      "Automation"
+    ],
+    "defaultPrompt": [
+      "Show me what evo remembers about this project.",
+      "List the skills available through evo.",
+      "Recall the relevant project conventions before we continue."
+    ]
   }
 }
